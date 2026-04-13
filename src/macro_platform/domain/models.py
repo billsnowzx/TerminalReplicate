@@ -168,6 +168,7 @@ class NotificationDelivery(BaseModel):
     related_id: str
     status: Literal["success", "failed"]
     triggered_at: datetime
+    attempt_count: int = 1
     target: str
     output_path: str | None = None
     response_code: int | None = None

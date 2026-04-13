@@ -16,7 +16,7 @@ OpenBB-first research platform scaffold for macro analysis, cross-asset monitori
 - Report scheduler worker support, poll controls, and persisted run history
 - Change monitor for ranked macro and cross-asset deltas, including report-section support
 - Alert rules and persisted alert events for thresholded change detection and alert-driven report sections
-- Persisted notification channels and delivery logs for alert events and report jobs
+- Persisted notification channels and delivery logs for alert events and report jobs, including test-send and retry flows
 - Tests for catalog shape, analytics, and API behavior
 
 ## Quick start

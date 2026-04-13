@@ -287,6 +287,28 @@ elif view == "Notification Center":
             ]
         )
         st.dataframe(deliveries, use_container_width=True)
+        if channels:
+            test_channel_id = st.selectbox(
+                "Send test notification",
+                [item.id for item in channels],
+                key="test_notification_channel",
+                format_func=lambda x: next(item.name for item in channels if item.id == x),
+            )
+            test_subject = st.text_input("Test subject", value="")
+            if st.button("Send test notification"):
+                delivery = service.send_test_notification(test_channel_id, subject=test_subject or None)
+                st.success(f"Sent test notification via {delivery.channel_name}")
+        delivery_rows = service.list_notification_deliveries(
+            channel_id=None if channel_filter == "all" else channel_filter,
+            event_type=None if event_type_filter == "all" else event_type_filter,
+            status=None if status_filter == "all" else status_filter,
+            limit=100,
+        )
+        if delivery_rows:
+            retry_delivery_id = st.selectbox("Retry delivery", [item.id for item in delivery_rows])
+            if st.button("Retry selected delivery"):
+                delivery = service.retry_notification_delivery(retry_delivery_id)
+                st.success(f"Retried delivery {delivery.id} via {delivery.channel_name}")
 
 elif view == "Screening Lab":
     st.subheader("Screening Lab")

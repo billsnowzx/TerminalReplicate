@@ -399,6 +399,31 @@ def test_notification_channel_persistence_round_trip(client):
     assert fetched.json()["kind"] == "email"
 
 
+def test_notification_test_send_and_retry(client):
+    channel_payload = {
+        "id": "ops-drop",
+        "name": "Ops Drop",
+        "kind": "file",
+        "target": "ops",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    sent = client.post("/api/notifications/channels/ops-drop/test", params={"subject": "Ops Test"})
+    assert sent.status_code == 200
+    first_delivery = sent.json()
+    assert first_delivery["status"] == "success"
+    assert Path(first_delivery["output_path"]).exists()
+    fetched = client.get(f"/api/notifications/deliveries/{first_delivery['id']}")
+    assert fetched.status_code == 200
+    retried = client.post(f"/api/notifications/deliveries/{first_delivery['id']}/retry")
+    assert retried.status_code == 200
+    second_delivery = retried.json()
+    assert second_delivery["attempt_count"] == 2
+    assert second_delivery["id"] != first_delivery["id"]
+    assert Path(second_delivery["output_path"]).exists()
+
+
 def test_run_due_report_jobs_executes_overdue_active_jobs(client):
     template_payload = {
         "id": "due-pack",

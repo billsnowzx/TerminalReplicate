@@ -443,6 +443,12 @@ class PlatformService:
             limit=limit,
         )
 
+    def get_notification_delivery(self, delivery_id: str) -> NotificationDelivery:
+        delivery = self.notification_delivery_repo.get(delivery_id)
+        if delivery is None:
+            raise KeyError(delivery_id)
+        return delivery
+
     def dispatch_notification(
         self,
         channel_id: str,
@@ -450,6 +456,7 @@ class PlatformService:
         related_id: str,
         subject: str,
         payload: dict[str, object],
+        attempt_count: int = 1,
     ) -> NotificationDelivery:
         channel = self.get_notification_channel(channel_id)
         triggered_at = datetime.now()
@@ -461,6 +468,7 @@ class PlatformService:
             related_id=related_id,
             status="success",
             triggered_at=triggered_at,
+            attempt_count=attempt_count,
             target=channel.target,
             payload={"subject": subject, **payload},
         )
@@ -477,6 +485,33 @@ class PlatformService:
             delivery.status = "failed"
             delivery.error_message = str(exc)
         return self.notification_delivery_repo.save(delivery)
+
+    def send_test_notification(self, channel_id: str, subject: str | None = None) -> NotificationDelivery:
+        channel = self.get_notification_channel(channel_id)
+        return self.dispatch_notification(
+            channel_id=channel.id,
+            event_type="manual",
+            related_id=f"test-{uuid4().hex[:8]}",
+            subject=subject or f"Test notification: {channel.name}",
+            payload={
+                "message": f"Test notification sent through {channel.kind} channel '{channel.name}'.",
+                "channel_kind": channel.kind,
+            },
+        )
+
+    def retry_notification_delivery(self, delivery_id: str) -> NotificationDelivery:
+        existing = self.get_notification_delivery(delivery_id)
+        subject = str(existing.payload.get("subject", existing.channel_name))
+        retry_payload = dict(existing.payload)
+        retry_payload["retried_from_delivery_id"] = existing.id
+        return self.dispatch_notification(
+            channel_id=existing.channel_id,
+            event_type=existing.event_type,
+            related_id=existing.related_id,
+            subject=subject,
+            payload=retry_payload,
+            attempt_count=existing.attempt_count + 1,
+        )
 
     def run_change_alert_scan(self, rule_id: str | None = None) -> list[ChangeAlertEvent]:
         rules = [self.get_change_alert_rule(rule_id)] if rule_id else self.list_change_alert_rules()

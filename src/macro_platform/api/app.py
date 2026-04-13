@@ -182,6 +182,14 @@ def save_notification_channel(channel: NotificationChannel):
     return service.save_notification_channel(channel).model_dump(mode="json")
 
 
+@app.post("/api/notifications/channels/{channel_id}/test")
+def send_test_notification(channel_id: str, subject: str | None = None):
+    try:
+        return service.send_test_notification(channel_id, subject=subject).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
+
+
 @app.get("/api/notifications/deliveries")
 def list_notification_deliveries(
     channel_id: str | None = None,
@@ -198,6 +206,22 @@ def list_notification_deliveries(
             limit=limit,
         )
     ]
+
+
+@app.get("/api/notifications/deliveries/{delivery_id}")
+def get_notification_delivery(delivery_id: str):
+    try:
+        return service.get_notification_delivery(delivery_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification delivery not found.") from exc
+
+
+@app.post("/api/notifications/deliveries/{delivery_id}/retry")
+def retry_notification_delivery(delivery_id: str):
+    try:
+        return service.retry_notification_delivery(delivery_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification delivery not found.") from exc
 
 
 @app.post("/api/screens/run")
