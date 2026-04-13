@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "macro-platform"
+version = "0.1.0"
+description = "Internal macro and investment research platform scaffold."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "httpx",
+    "numpy",
+    "openpyxl",
+    "pandas",
+    "plotly",
+    "psycopg[binary]",
+    "pyarrow",
+    "pydantic>=2",
+    "pydantic-settings",
+    "requests",
+    "sqlalchemy>=2",
+    "streamlit",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+openbb = ["openbb"]
+dev = ["pytest"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

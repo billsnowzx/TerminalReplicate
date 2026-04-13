@@ -1,0 +1,9 @@
+{
+  "name": "macro-platform",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Internal macro and investment research platform scaffold.",
+  "dependencies": {
+    "pptxgenjs": "^3.12.0"
+  }
+}

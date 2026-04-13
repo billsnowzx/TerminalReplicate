@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.streamlit/
+node_modules/
+*.egg-info/
+*.pyc
+data/*.db
+data/*.json
+data/notifications/
+data/raw/*.parquet
+data/report_scripts/
+data/reports/
+data/runlogs/
