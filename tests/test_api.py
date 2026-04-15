@@ -3,6 +3,7 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -405,6 +406,7 @@ def test_notification_test_send_and_retry(client):
         "name": "Ops Drop",
         "kind": "file",
         "target": "ops",
+        "retry_backoff_minutes": 0,
         "owner_scope": "shared",
         "active": True,
     }
@@ -422,6 +424,781 @@ def test_notification_test_send_and_retry(client):
     assert second_delivery["attempt_count"] == 2
     assert second_delivery["id"] != first_delivery["id"]
     assert Path(second_delivery["output_path"]).exists()
+
+
+def test_digest_channel_batches_alert_events_and_publishes_included(client):
+    channel_payload = {
+        "id": "digest-drop",
+        "name": "Digest Drop",
+        "kind": "file",
+        "target": "digest",
+        "event_types": ["alert_event"],
+        "delivery_mode": "digest",
+        "min_significance": "low",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    watchlist_payload = {
+        "id": "digest-watch",
+        "name": "Digest Watch",
+        "tickers": ["TLT"],
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/watchlists", json=watchlist_payload).status_code == 200
+    rule_payload = {
+        "id": "digest-rule",
+        "name": "Digest Rule",
+        "entity_type": "asset",
+        "asset_class": "rates",
+        "watchlist_id": "digest-watch",
+        "min_significance": "low",
+        "notification_channel_ids": ["digest-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/alerts/rules", json=rule_payload).status_code == 200
+    scanned = client.post("/api/alerts/scan", params={"rule_id": "digest-rule"})
+    assert scanned.status_code == 200
+    deliveries = client.get("/api/notifications/deliveries", params={"channel_id": "digest-drop", "event_type": "alert_event"})
+    assert deliveries.status_code == 200
+    assert deliveries.json() == []
+    digest = client.post(
+        "/api/notifications/channels/digest-drop/digest",
+        params={"status": "new", "limit": 10, "publish_included": True},
+    )
+    assert digest.status_code == 200
+    digest_payload = digest.json()
+    assert digest_payload["event_count"] > 0
+    assert Path(digest_payload["output_path"]).exists()
+    listed = client.get("/api/notifications/digests", params={"channel_id": "digest-drop"})
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == digest_payload["id"]
+    events = client.get("/api/alerts/events", params={"rule_id": "digest-rule", "status": "published"})
+    assert events.status_code == 200
+    assert len(events.json()) > 0
+
+
+def test_alert_channel_min_significance_filters_low_signal_delivery(client):
+    channel_payload = {
+        "id": "high-only-drop",
+        "name": "High Only Drop",
+        "kind": "file",
+        "target": "high-only",
+        "event_types": ["alert_event"],
+        "delivery_mode": "immediate",
+        "min_significance": "high",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    watchlist_payload = {
+        "id": "high-only-watch",
+        "name": "High Only Watch",
+        "tickers": ["TLT"],
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/watchlists", json=watchlist_payload).status_code == 200
+    rule_payload = {
+        "id": "high-only-rule",
+        "name": "High Only Rule",
+        "entity_type": "asset",
+        "asset_class": "rates",
+        "watchlist_id": "high-only-watch",
+        "min_significance": "low",
+        "notification_channel_ids": ["high-only-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/alerts/rules", json=rule_payload).status_code == 200
+    scanned = client.post("/api/alerts/scan", params={"rule_id": "high-only-rule"})
+    assert scanned.status_code == 200
+    assert len(scanned.json()) > 0
+    deliveries = client.get("/api/notifications/deliveries", params={"channel_id": "high-only-drop", "event_type": "alert_event"})
+    assert deliveries.status_code == 200
+    assert deliveries.json() == []
+
+
+def test_failed_primary_notification_routes_to_fallback_channel(client):
+    fallback_payload = {
+        "id": "fallback-drop",
+        "name": "Fallback Drop",
+        "kind": "file",
+        "target": "fallback",
+        "event_types": ["alert_event"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=fallback_payload).status_code == 200
+    primary_payload = {
+        "id": "broken-webhook",
+        "name": "Broken Webhook",
+        "kind": "webhook",
+        "target": "http://127.0.0.1:9/notify",
+        "event_types": ["alert_event"],
+        "fallback_channel_ids": ["fallback-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=primary_payload).status_code == 200
+    watchlist_payload = {
+        "id": "fallback-watch",
+        "name": "Fallback Watch",
+        "tickers": ["TLT"],
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/watchlists", json=watchlist_payload).status_code == 200
+    rule_payload = {
+        "id": "fallback-rule",
+        "name": "Fallback Rule",
+        "entity_type": "asset",
+        "asset_class": "rates",
+        "watchlist_id": "fallback-watch",
+        "min_significance": "low",
+        "notification_channel_ids": ["broken-webhook"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/alerts/rules", json=rule_payload).status_code == 200
+    scanned = client.post("/api/alerts/scan", params={"rule_id": "fallback-rule"})
+    assert scanned.status_code == 200
+    primary_deliveries = client.get("/api/notifications/deliveries", params={"channel_id": "broken-webhook", "event_type": "alert_event"})
+    fallback_deliveries = client.get("/api/notifications/deliveries", params={"channel_id": "fallback-drop", "event_type": "alert_event"})
+    assert primary_deliveries.status_code == 200
+    assert fallback_deliveries.status_code == 200
+    assert primary_deliveries.json()[0]["status"] == "failed"
+    assert len(fallback_deliveries.json()) > 0
+    assert fallback_deliveries.json()[0]["payload"]["fallback_from_channel_id"] == "broken-webhook"
+    assert Path(fallback_deliveries.json()[0]["output_path"]).exists()
+
+
+def test_alert_channel_escalates_to_secondary_destinations(client):
+    escalation_payload = {
+        "id": "escalation-drop",
+        "name": "Escalation Drop",
+        "kind": "file",
+        "target": "escalation",
+        "event_types": ["alert_event"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=escalation_payload).status_code == 200
+    primary_payload = {
+        "id": "primary-drop",
+        "name": "Primary Drop",
+        "kind": "file",
+        "target": "primary",
+        "event_types": ["alert_event"],
+        "escalation_channel_ids": ["escalation-drop"],
+        "escalation_min_significance": "low",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=primary_payload).status_code == 200
+    watchlist_payload = {
+        "id": "escalation-watch",
+        "name": "Escalation Watch",
+        "tickers": ["TLT"],
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/watchlists", json=watchlist_payload).status_code == 200
+    rule_payload = {
+        "id": "escalation-rule",
+        "name": "Escalation Rule",
+        "entity_type": "asset",
+        "asset_class": "rates",
+        "watchlist_id": "escalation-watch",
+        "min_significance": "low",
+        "notification_channel_ids": ["primary-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/alerts/rules", json=rule_payload).status_code == 200
+    scanned = client.post("/api/alerts/scan", params={"rule_id": "escalation-rule"})
+    assert scanned.status_code == 200
+    primary_deliveries = client.get("/api/notifications/deliveries", params={"channel_id": "primary-drop", "event_type": "alert_event"})
+    escalation_deliveries = client.get("/api/notifications/deliveries", params={"channel_id": "escalation-drop", "event_type": "alert_event"})
+    assert primary_deliveries.status_code == 200
+    assert escalation_deliveries.status_code == 200
+    assert len(primary_deliveries.json()) > 0
+    assert len(escalation_deliveries.json()) > 0
+    assert escalation_deliveries.json()[0]["payload"]["escalated_from_channel_id"] == "primary-drop"
+    assert Path(escalation_deliveries.json()[0]["output_path"]).exists()
+
+
+def test_duplicate_suppression_skips_second_report_job_delivery(client):
+    channel_payload = {
+        "id": "dedupe-drop",
+        "name": "Dedupe Drop",
+        "kind": "file",
+        "target": "dedupe",
+        "event_types": ["report_job"],
+        "duplicate_window_minutes": 1440,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    template_payload = {
+        "id": "dedupe-pack",
+        "name": "Dedupe Pack",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=template_payload).status_code == 200
+    job_payload = {
+        "id": "dedupe-job",
+        "name": "Dedupe Job",
+        "template_id": "dedupe-pack",
+        "cadence": "manual",
+        "run_hour_local": 8,
+        "export_formats": ["json"],
+        "notification_channel_ids": ["dedupe-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/reports/jobs", json=job_payload).status_code == 200
+    assert client.post("/api/reports/jobs/dedupe-job/run").status_code == 200
+    assert client.post("/api/reports/jobs/dedupe-job/run").status_code == 200
+    deliveries = client.get("/api/notifications/deliveries", params={"channel_id": "dedupe-drop", "event_type": "report_job"})
+    assert deliveries.status_code == 200
+    assert len(deliveries.json()) == 1
+
+
+def test_retry_backoff_and_max_attempts_are_enforced(client):
+    channel_payload = {
+        "id": "retry-guard-drop",
+        "name": "Retry Guard Drop",
+        "kind": "file",
+        "target": "retry-guard",
+        "retry_backoff_minutes": 60,
+        "max_retry_attempts": 2,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    sent = client.post("/api/notifications/channels/retry-guard-drop/test", params={"subject": "Retry Guard"})
+    assert sent.status_code == 200
+    delivery_id = sent.json()["id"]
+    backoff_retry = client.post(f"/api/notifications/deliveries/{delivery_id}/retry")
+    assert backoff_retry.status_code == 400
+    delivery = api_module.service.get_notification_delivery(delivery_id)
+    delivery.triggered_at = delivery.triggered_at - timedelta(hours=2)
+    delivery.attempt_count = 2
+    api_module.service.notification_delivery_repo.save(delivery)
+    max_retry = client.post(f"/api/notifications/deliveries/{delivery_id}/retry")
+    assert max_retry.status_code == 400
+
+
+def test_run_due_notification_digests_executes_overdue_digest_channel(client):
+    channel_payload = {
+        "id": "due-digest-drop",
+        "name": "Due Digest Drop",
+        "kind": "file",
+        "target": "due-digest",
+        "event_types": ["alert_event"],
+        "delivery_mode": "digest",
+        "min_significance": "low",
+        "digest_hour_local": 8,
+        "digest_limit": 10,
+        "digest_status_filter": "new",
+        "digest_publish_included": True,
+        "next_digest_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    watchlist_payload = {
+        "id": "due-digest-watch",
+        "name": "Due Digest Watch",
+        "tickers": ["TLT"],
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/watchlists", json=watchlist_payload).status_code == 200
+    rule_payload = {
+        "id": "due-digest-rule",
+        "name": "Due Digest Rule",
+        "entity_type": "asset",
+        "asset_class": "rates",
+        "watchlist_id": "due-digest-watch",
+        "min_significance": "low",
+        "notification_channel_ids": ["due-digest-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/alerts/rules", json=rule_payload).status_code == 200
+    assert client.post("/api/alerts/scan", params={"rule_id": "due-digest-rule"}).status_code == 200
+    due = client.post("/api/notifications/digests/run-due")
+    assert due.status_code == 200
+    payload = due.json()
+    assert len(payload) == 1
+    assert payload[0]["channel_id"] == "due-digest-drop"
+    assert payload[0]["event_count"] > 0
+    assert Path(payload[0]["output_path"]).exists()
+    channel = client.get("/api/notifications/channels/due-digest-drop")
+    assert channel.status_code == 200
+    assert channel.json()["last_digest_at"] is not None
+    assert channel.json()["next_digest_at"] is not None
+
+
+def test_paused_digest_channel_is_skipped_by_due_digest_runner(client):
+    channel_payload = {
+        "id": "paused-digest-drop",
+        "name": "Paused Digest Drop",
+        "kind": "file",
+        "target": "paused-digest",
+        "event_types": ["alert_event"],
+        "delivery_mode": "digest",
+        "min_significance": "low",
+        "digest_hour_local": 8,
+        "digest_limit": 10,
+        "digest_status_filter": "new",
+        "digest_publish_included": False,
+        "paused_until": (datetime.now() + timedelta(hours=2)).isoformat(),
+        "pause_reason": "Maintenance window",
+        "next_digest_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    due = client.post("/api/notifications/digests/run-due")
+    assert due.status_code == 200
+    assert due.json() == []
+    digests = client.get("/api/notifications/digests", params={"channel_id": "paused-digest-drop"})
+    assert digests.status_code == 200
+    assert digests.json() == []
+
+
+def test_notification_health_and_pause_resume_endpoints(client):
+    success_channel = {
+        "id": "health-file",
+        "name": "Health File",
+        "kind": "file",
+        "target": "health-file",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    fail_channel = {
+        "id": "health-broken",
+        "name": "Health Broken",
+        "kind": "webhook",
+        "target": "http://127.0.0.1:9/health",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=success_channel).status_code == 200
+    assert client.post("/api/notifications/channels", json=fail_channel).status_code == 200
+    assert client.post("/api/notifications/channels/health-file/test").status_code == 200
+    failed_send = client.post("/api/notifications/channels/health-broken/test")
+    assert failed_send.status_code == 200
+    assert failed_send.json()["status"] == "failed"
+    paused = client.post(
+        "/api/notifications/channels/health-file/pause",
+        params={"minutes": 30, "reason": "Ops freeze"},
+    )
+    assert paused.status_code == 200
+    assert paused.json()["paused_until"] is not None
+    health = client.get("/api/notifications/health", params={"window_hours": 24})
+    assert health.status_code == 200
+    rows = {item["channel_id"]: item for item in health.json()}
+    assert rows["health-file"]["is_paused"] is True
+    assert rows["health-file"]["success_count"] >= 1
+    assert rows["health-broken"]["failed_count"] >= 1
+    resumed = client.post("/api/notifications/channels/health-file/resume")
+    assert resumed.status_code == 200
+    assert resumed.json()["paused_until"] is None
+
+
+def test_auto_pause_stops_repeated_failed_report_job_notifications(client):
+    channel_payload = {
+        "id": "auto-pause-webhook",
+        "name": "Auto Pause Webhook",
+        "kind": "webhook",
+        "target": "http://127.0.0.1:9/notify",
+        "event_types": ["report_job"],
+        "auto_pause_enabled": True,
+        "auto_pause_window_hours": 24,
+        "auto_pause_error_rate_threshold": 1.0,
+        "auto_pause_consecutive_failures": 1,
+        "auto_pause_minutes": 180,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    template_payload = {
+        "id": "auto-pause-pack",
+        "name": "Auto Pause Pack",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=template_payload).status_code == 200
+    job_payload = {
+        "id": "auto-pause-job",
+        "name": "Auto Pause Job",
+        "template_id": "auto-pause-pack",
+        "cadence": "manual",
+        "run_hour_local": 8,
+        "export_formats": ["json"],
+        "notification_channel_ids": ["auto-pause-webhook"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/reports/jobs", json=job_payload).status_code == 200
+    assert client.post("/api/reports/jobs/auto-pause-job/run").status_code == 200
+    channel = client.get("/api/notifications/channels/auto-pause-webhook")
+    assert channel.status_code == 200
+    channel_payload = channel.json()
+    assert channel_payload["paused_until"] is not None
+    assert channel_payload["last_auto_paused_at"] is not None
+    assert "Auto-paused" in channel_payload["pause_reason"]
+    assert client.post("/api/reports/jobs/auto-pause-job/run").status_code == 200
+    deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "auto-pause-webhook", "event_type": "report_job"},
+    )
+    assert deliveries.status_code == 200
+    rows = deliveries.json()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+
+
+def test_notification_routing_audit_tracks_delivered_suppressed_and_paused(client):
+    channel_payload = {
+        "id": "audit-drop",
+        "name": "Audit Drop",
+        "kind": "file",
+        "target": "audit",
+        "event_types": ["report_job"],
+        "duplicate_window_minutes": 1440,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    template_payload = {
+        "id": "audit-pack",
+        "name": "Audit Pack",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=template_payload).status_code == 200
+    job_payload = {
+        "id": "audit-job",
+        "name": "Audit Job",
+        "template_id": "audit-pack",
+        "cadence": "manual",
+        "run_hour_local": 8,
+        "export_formats": ["json"],
+        "notification_channel_ids": ["audit-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/reports/jobs", json=job_payload).status_code == 200
+    assert client.post("/api/reports/jobs/audit-job/run").status_code == 200
+    assert client.post("/api/reports/jobs/audit-job/run").status_code == 200
+    assert client.post("/api/notifications/channels/audit-drop/pause", params={"minutes": 30}).status_code == 200
+    assert client.post("/api/reports/jobs/audit-job/run").status_code == 200
+    audits = client.get("/api/notifications/routing", params={"channel_id": "audit-drop", "event_type": "report_job"})
+    assert audits.status_code == 200
+    decisions = {item["decision"] for item in audits.json()}
+    assert "delivered" in decisions
+    assert "suppressed" in decisions
+    assert "paused" in decisions
+
+
+def test_notification_routing_summary_and_export_endpoints(client):
+    channel_payload = {
+        "id": "audit-export-drop",
+        "name": "Audit Export Drop",
+        "kind": "file",
+        "target": "audit-export",
+        "event_types": ["report_job"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    template_payload = {
+        "id": "audit-export-pack",
+        "name": "Audit Export Pack",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=template_payload).status_code == 200
+    job_payload = {
+        "id": "audit-export-job",
+        "name": "Audit Export Job",
+        "template_id": "audit-export-pack",
+        "cadence": "manual",
+        "run_hour_local": 8,
+        "export_formats": ["json"],
+        "notification_channel_ids": ["audit-export-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/reports/jobs", json=job_payload).status_code == 200
+    assert client.post("/api/reports/jobs/audit-export-job/run").status_code == 200
+    routing = client.get(
+        "/api/notifications/routing",
+        params={"channel_id": "audit-export-drop", "event_type": "report_job"},
+    )
+    assert routing.status_code == 200
+    assert len(routing.json()) > 0
+    summary = client.get(
+        "/api/notifications/routing/summary",
+        params={"channel_id": "audit-export-drop", "event_type": "report_job", "window_hours": 24},
+    )
+    assert summary.status_code == 200
+    rows = summary.json()
+    assert len(rows) == 1
+    assert rows[0]["channel_id"] == "audit-export-drop"
+    assert rows[0]["delivered"] >= 1
+    export_csv = client.post(
+        "/api/notifications/routing/export",
+        params={
+            "format": "csv",
+            "channel_id": "audit-export-drop",
+            "event_type": "report_job",
+            "limit": 1000,
+        },
+    )
+    assert export_csv.status_code == 200
+    csv_payload = export_csv.json()
+    assert csv_payload["format"] == "csv"
+    assert csv_payload["count"] >= 1
+    assert Path(csv_payload["path"]).exists()
+    export_json = client.post(
+        "/api/notifications/routing/export",
+        params={
+            "format": "json",
+            "channel_id": "audit-export-drop",
+            "event_type": "report_job",
+            "limit": 1000,
+        },
+    )
+    assert export_json.status_code == 200
+    json_payload = export_json.json()
+    assert json_payload["format"] == "json"
+    assert json_payload["count"] >= 1
+    assert Path(json_payload["path"]).exists()
+
+
+def test_notification_recovery_auto_resumes_paused_file_channel(client):
+    channel_payload = {
+        "id": "recovery-file-drop",
+        "name": "Recovery File Drop",
+        "kind": "file",
+        "target": "recovery-file",
+        "event_types": ["manual"],
+        "auto_resume_enabled": True,
+        "recovery_probe_profile": "verbose",
+        "recovery_probe_payload": {"probe_tag": "ops-recovery"},
+        "recovery_probe_cooldown_minutes": 120,
+        "recovery_probe_max_per_hour": 1,
+        "last_auto_paused_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+        "paused_until": (datetime.now() - timedelta(minutes=1)).isoformat(),
+        "pause_reason": "Auto-paused test",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    recovery = client.post("/api/notifications/recovery/run")
+    assert recovery.status_code == 200
+    rows = recovery.json()
+    assert len(rows) == 1
+    assert rows[0]["channel_id"] == "recovery-file-drop"
+    assert rows[0]["status"] == "resumed"
+    assert rows[0]["probe_profile"] == "verbose"
+    probe_delivery = client.get(f"/api/notifications/deliveries/{rows[0]['probe_delivery_id']}")
+    assert probe_delivery.status_code == 200
+    probe_payload = probe_delivery.json()["payload"]
+    assert probe_payload["auto_resume_probe"] is True
+    assert probe_payload["probe_profile"] == "verbose"
+    assert probe_payload["probe_tag"] == "ops-recovery"
+    assert probe_payload["channel_id"] == "recovery-file-drop"
+    channel = client.get("/api/notifications/channels/recovery-file-drop")
+    assert channel.status_code == 200
+    saved = channel.json()
+    assert saved["paused_until"] is None
+    assert saved["last_auto_resumed_at"] is not None
+    saved["paused_until"] = (datetime.now() - timedelta(minutes=1)).isoformat()
+    saved["last_auto_paused_at"] = datetime.now().isoformat()
+    saved["pause_reason"] = "Auto-paused test again"
+    assert client.post("/api/notifications/channels", json=saved).status_code == 200
+    second_recovery = client.post("/api/notifications/recovery/run")
+    assert second_recovery.status_code == 200
+    second_rows = second_recovery.json()
+    assert len(second_rows) == 1
+    assert second_rows[0]["channel_id"] == "recovery-file-drop"
+    assert second_rows[0]["status"] == "skipped"
+    assert second_rows[0]["reason"] in {"recovery_probe_cooldown", "recovery_probe_rate_limited"}
+    probe_deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "recovery-file-drop", "event_type": "manual"},
+    )
+    assert probe_deliveries.status_code == 200
+    probe_rows = [row for row in probe_deliveries.json() if row["payload"].get("auto_resume_probe") is True]
+    assert len(probe_rows) == 1
+
+
+def test_ops_escalation_policy_notifies_target_and_respects_cooldown(client):
+    ops_channel_payload = {
+        "id": "ops-escalation-drop",
+        "name": "Ops Escalation Drop",
+        "kind": "file",
+        "target": "ops-escalation",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=ops_channel_payload).status_code == 200
+    primary_payload = {
+        "id": "policy-broken-webhook",
+        "name": "Policy Broken Webhook",
+        "kind": "webhook",
+        "target": "http://127.0.0.1:9/policy",
+        "event_types": ["report_job"],
+        "ops_escalation_enabled": True,
+        "ops_escalation_channel_ids": ["ops-escalation-drop"],
+        "ops_escalation_window_hours": 24,
+        "ops_escalation_threshold": 1,
+        "ops_escalation_cooldown_minutes": 120,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=primary_payload).status_code == 200
+    template_payload = {
+        "id": "policy-escalation-pack",
+        "name": "Policy Escalation Pack",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=template_payload).status_code == 200
+    job_payload = {
+        "id": "policy-escalation-job",
+        "name": "Policy Escalation Job",
+        "template_id": "policy-escalation-pack",
+        "cadence": "manual",
+        "run_hour_local": 8,
+        "export_formats": ["json"],
+        "notification_channel_ids": ["policy-broken-webhook"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/reports/jobs", json=job_payload).status_code == 200
+    assert client.post("/api/reports/jobs/policy-escalation-job/run").status_code == 200
+    ops_deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "ops-escalation-drop", "event_type": "manual"},
+    )
+    assert ops_deliveries.status_code == 200
+    rows = ops_deliveries.json()
+    assert len(rows) == 1
+    assert rows[0]["payload"]["policy_escalation"] is True
+    assert rows[0]["payload"]["source_channel_id"] == "policy-broken-webhook"
+    source_channel = client.get("/api/notifications/channels/policy-broken-webhook")
+    assert source_channel.status_code == 200
+    assert source_channel.json()["last_ops_escalated_at"] is not None
+    assert client.post("/api/reports/jobs/policy-escalation-job/run").status_code == 200
+    ops_deliveries_again = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "ops-escalation-drop", "event_type": "manual"},
+    )
+    assert ops_deliveries_again.status_code == 200
+    assert len(ops_deliveries_again.json()) == 1
+
+
+def test_ops_incident_lifecycle_endpoints(client):
+    ops_channel_payload = {
+        "id": "ops-incident-drop",
+        "name": "Ops Incident Drop",
+        "kind": "file",
+        "target": "ops-incident",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=ops_channel_payload).status_code == 200
+    primary_payload = {
+        "id": "incident-broken-webhook",
+        "name": "Incident Broken Webhook",
+        "kind": "webhook",
+        "target": "http://127.0.0.1:9/incident",
+        "event_types": ["report_job"],
+        "ops_escalation_enabled": True,
+        "ops_escalation_channel_ids": ["ops-incident-drop"],
+        "ops_escalation_window_hours": 24,
+        "ops_escalation_threshold": 1,
+        "ops_escalation_cooldown_minutes": 0,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=primary_payload).status_code == 200
+    template_payload = {
+        "id": "incident-pack",
+        "name": "Incident Pack",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=template_payload).status_code == 200
+    job_payload = {
+        "id": "incident-job",
+        "name": "Incident Job",
+        "template_id": "incident-pack",
+        "cadence": "manual",
+        "run_hour_local": 8,
+        "export_formats": ["json"],
+        "notification_channel_ids": ["incident-broken-webhook"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/reports/jobs", json=job_payload).status_code == 200
+    assert client.post("/api/reports/jobs/incident-job/run").status_code == 200
+    incidents = client.get("/api/ops/incidents", params={"status": "open"})
+    assert incidents.status_code == 200
+    rows = incidents.json()
+    assert len(rows) >= 1
+    incident = next(item for item in rows if item["source_channel_id"] == "incident-broken-webhook")
+    incident_id = incident["id"]
+    assert incident["priority"] in {"low", "medium", "high"}
+    assert incident["sla_minutes"] >= 0
+    assert incident["due_at"] is not None
+
+    summary_open = client.get("/api/ops/incidents/summary")
+    assert summary_open.status_code == 200
+    assert summary_open.json()["open"] >= 1
+
+    fetched = client.get(f"/api/ops/incidents/{incident_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["status"] == "open"
+    ack = client.post(
+        f"/api/ops/incidents/{incident_id}/update",
+        params={
+            "status": "ack",
+            "owner": "macro-ops",
+            "priority": "high",
+            "sla_minutes": 0,
+            "notes": "Investigating",
+        },
+    )
+    assert ack.status_code == 200
+    assert ack.json()["status"] == "ack"
+    assert ack.json()["owner"] == "macro-ops"
+    assert ack.json()["priority"] == "high"
+    assert ack.json()["acknowledged_at"] is not None
+
+    overdue = client.get("/api/ops/incidents", params={"overdue_only": True})
+    assert overdue.status_code == 200
+    assert any(item["id"] == incident_id for item in overdue.json())
+
+    resolved = client.post(
+        f"/api/ops/incidents/{incident_id}/status",
+        params={"status": "resolved", "notes": "Fixed"},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "resolved"
+    assert resolved.json()["resolved_at"] is not None
+
+    summary_resolved = client.get("/api/ops/incidents/summary")
+    assert summary_resolved.status_code == 200
+    assert summary_resolved.json()["resolved"] >= 1
 
 
 def test_run_due_report_jobs_executes_overdue_active_jobs(client):
@@ -509,12 +1286,51 @@ def test_scheduler_poll_endpoint_returns_summary(client):
         "next_run_at": (datetime.now() - timedelta(hours=1)).isoformat(),
     }
     assert client.post("/api/reports/jobs", json=overdue_job).status_code == 200
+    digest_channel_payload = {
+        "id": "poll-digest-drop",
+        "name": "Poll Digest Drop",
+        "kind": "file",
+        "target": "poll-digest",
+        "event_types": ["alert_event"],
+        "delivery_mode": "digest",
+        "min_significance": "low",
+        "digest_hour_local": 8,
+        "digest_limit": 10,
+        "digest_status_filter": "new",
+        "next_digest_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=digest_channel_payload).status_code == 200
+    watchlist_payload = {
+        "id": "poll-digest-watch",
+        "name": "Poll Digest Watch",
+        "tickers": ["TLT"],
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/watchlists", json=watchlist_payload).status_code == 200
+    rule_payload = {
+        "id": "poll-digest-rule",
+        "name": "Poll Digest Rule",
+        "entity_type": "asset",
+        "asset_class": "rates",
+        "watchlist_id": "poll-digest-watch",
+        "min_significance": "low",
+        "notification_channel_ids": ["poll-digest-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/alerts/rules", json=rule_payload).status_code == 200
+    assert client.post("/api/alerts/scan", params={"rule_id": "poll-digest-rule"}).status_code == 200
     poll = client.post("/api/reports/scheduler/poll")
     assert poll.status_code == 200
     payload = poll.json()
-    assert payload["attempted"] == 1
-    assert payload["succeeded"] == 1
+    assert payload["attempted"] == 2
+    assert payload["succeeded"] == 2
     assert payload["failed"] == 0
+    assert payload["job_succeeded"] == 1
+    assert payload["digest_succeeded"] == 1
+    assert len(payload["digests"]) == 1
 
 
 def test_price_cache_survives_provider_failure(client):
@@ -553,3 +1369,775 @@ def test_calendar_and_freshness_endpoints_return_payloads(client):
     assert isinstance(calendar.json(), list)
     assert isinstance(freshness.json(), list)
     assert any(item["country"] == "EA" for item in freshness.json())
+
+
+def test_source_health_endpoints_reflect_macro_fallback_degradation(client):
+    warm = client.post(
+        "/api/observations/query",
+        json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+    )
+    assert warm.status_code == 200
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fred down"))
+    try:
+        degraded = client.post(
+            "/api/observations/query",
+            json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+        )
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    assert degraded.status_code == 200
+    summary = client.get("/api/status/sources/summary")
+    assert summary.status_code == 200
+    assert summary.json()["total"] >= 1
+    sources = client.get("/api/status/sources", params={"source_kind": "macro"})
+    assert sources.status_code == 200
+    rows = sources.json()
+    fred_row = next(item for item in rows if item["id"] == "macro:fred")
+    assert fred_row["status"] in {"degraded", "down"}
+    assert fred_row["fallback_used"] is True
+    assert fred_row["consecutive_failures"] >= 1
+
+
+def test_source_health_policy_run_sends_manual_alert_notification(client):
+    channel_payload = {
+        "id": "source-policy-drop",
+        "name": "Source Policy Drop",
+        "kind": "file",
+        "target": "source-policy",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    warm = client.post(
+        "/api/observations/query",
+        json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+    )
+    assert warm.status_code == 200
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fred down"))
+    try:
+        degraded = client.post(
+            "/api/observations/query",
+            json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+        )
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    assert degraded.status_code == 200
+    threshold = client.post("/api/status/sources/macro:fred/threshold", params={"minutes": 15})
+    assert threshold.status_code == 200
+    assert threshold.json()["stale_threshold_minutes"] == 15
+    policy_payload = {
+        "id": "source-policy-1",
+        "name": "Macro Source Degraded Policy",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": True,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    saved = client.post("/api/status/sources/policies", json=policy_payload)
+    assert saved.status_code == 200
+    fetched = client.get("/api/status/sources/policies/source-policy-1")
+    assert fetched.status_code == 200
+    assert fetched.json()["source_id"] == "macro:fred"
+    ran = client.post("/api/status/sources/policies/run")
+    assert ran.status_code == 200
+    actions = ran.json()
+    assert any(item.get("policy_id") == "source-policy-1" and item.get("status") == "triggered" for item in actions)
+    runs = client.get("/api/status/sources/policies/runs")
+    assert runs.status_code == 200
+    run_rows = runs.json()
+    assert len(run_rows) >= 1
+    assert run_rows[0]["trigger"] == "manual"
+    run_id = run_rows[0]["id"]
+    run_detail = client.get(f"/api/status/sources/policies/runs/{run_id}")
+    assert run_detail.status_code == 200
+    assert run_detail.json()["triggered_actions"] >= 1
+    deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "source-policy-drop", "event_type": "manual"},
+    )
+    assert deliveries.status_code == 200
+    rows = deliveries.json()
+    assert len(rows) >= 1
+    assert rows[0]["payload"]["source_health_alert"] is True
+
+
+def test_source_health_policy_can_be_updated_and_deactivated(client):
+    channel_payload = {
+        "id": "source-policy-edit-drop",
+        "name": "Source Policy Edit Drop",
+        "kind": "file",
+        "target": "source-policy-edit",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    create_payload = {
+        "id": "source-policy-edit-1",
+        "name": "Source Policy Edit",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-edit-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=create_payload).status_code == 200
+    update_payload = {
+        **create_payload,
+        "name": "Source Policy Edit Updated",
+        "trigger_on_stale": True,
+        "active": False,
+    }
+    updated = client.post("/api/status/sources/policies", json=update_payload)
+    assert updated.status_code == 200
+    fetched = client.get("/api/status/sources/policies/source-policy-edit-1")
+    assert fetched.status_code == 200
+    row = fetched.json()
+    assert row["name"] == "Source Policy Edit Updated"
+    assert row["trigger_on_stale"] is True
+    assert row["active"] is False
+    active_only = client.get("/api/status/sources/policies", params={"active_only": True})
+    assert active_only.status_code == 200
+    assert all(item["id"] != "source-policy-edit-1" for item in active_only.json())
+
+
+def test_source_health_policy_archive_restore_keeps_run_history(client):
+    channel_payload = {
+        "id": "source-policy-archive-drop",
+        "name": "Source Policy Archive Drop",
+        "kind": "file",
+        "target": "source-policy-archive",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    assert client.post(
+        "/api/observations/query",
+        json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+    ).status_code == 200
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fred down"))
+    try:
+        assert client.post(
+            "/api/observations/query",
+            json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+        ).status_code == 200
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    policy_payload = {
+        "id": "source-policy-archive-1",
+        "name": "Source Policy Archive",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-archive-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    run = client.post("/api/status/sources/policies/run")
+    assert run.status_code == 200
+    runs_before = client.get("/api/status/sources/policies/runs")
+    assert runs_before.status_code == 200
+    assert len(runs_before.json()) >= 1
+
+    archived = client.post(
+        "/api/status/sources/policies/source-policy-archive-1/archive",
+        params={"reason": "retired"},
+    )
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None
+    assert archived.json()["active"] is False
+    list_default = client.get("/api/status/sources/policies")
+    assert list_default.status_code == 200
+    assert all(item["id"] != "source-policy-archive-1" for item in list_default.json())
+    list_archived = client.get("/api/status/sources/policies", params={"include_archived": True})
+    assert list_archived.status_code == 200
+    assert any(item["id"] == "source-policy-archive-1" for item in list_archived.json())
+    runs_after_archive = client.get("/api/status/sources/policies/runs")
+    assert runs_after_archive.status_code == 200
+    assert len(runs_after_archive.json()) >= len(runs_before.json())
+
+    restored = client.post("/api/status/sources/policies/source-policy-archive-1/restore")
+    assert restored.status_code == 200
+    assert restored.json()["archived_at"] is None
+    assert restored.json()["active"] is True
+
+
+def test_source_health_policy_version_history_tracks_create_update_archive_restore(client):
+    channel_payload = {
+        "id": "source-policy-version-drop",
+        "name": "Source Policy Version Drop",
+        "kind": "file",
+        "target": "source-policy-version",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    create_payload = {
+        "id": "source-policy-version-1",
+        "name": "Source Policy Version",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-version-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=create_payload).status_code == 200
+    update_payload = {**create_payload, "trigger_on_stale": True}
+    assert client.post("/api/status/sources/policies", json=update_payload).status_code == 200
+    assert client.post("/api/status/sources/policies/source-policy-version-1/archive", params={"reason": "version-test"}).status_code == 200
+    assert client.post("/api/status/sources/policies/source-policy-version-1/restore").status_code == 200
+
+    versions = client.get("/api/status/sources/policies/source-policy-version-1/versions")
+    assert versions.status_code == 200
+    rows = versions.json()
+    assert len(rows) >= 4
+    actions = {item["action"] for item in rows}
+    assert {"create", "update", "archive", "restore"}.issubset(actions)
+    assert any("trigger_on_stale" in item["changed_fields"] for item in rows if item["action"] == "update")
+    assert any("archived_at" in item["changed_fields"] for item in rows if item["action"] in {"archive", "restore"})
+    version_detail = client.get(f"/api/status/sources/policies/versions/{rows[0]['id']}")
+    assert version_detail.status_code == 200
+    assert version_detail.json()["policy_id"] == "source-policy-version-1"
+
+
+def test_source_health_policy_version_rollback_restores_snapshot(client):
+    channel_payload = {
+        "id": "source-policy-rollback-drop",
+        "name": "Source Policy Rollback Drop",
+        "kind": "file",
+        "target": "source-policy-rollback",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    create_payload = {
+        "id": "source-policy-rollback-1",
+        "name": "Source Policy Rollback",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-rollback-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=create_payload).status_code == 200
+    update_payload = {**create_payload, "name": "Source Policy Rollback Updated", "trigger_on_stale": True}
+    assert client.post("/api/status/sources/policies", json=update_payload).status_code == 200
+    versions = client.get("/api/status/sources/policies/source-policy-rollback-1/versions")
+    assert versions.status_code == 200
+    rows = versions.json()
+    create_version = next(item for item in rows if item["action"] == "create")
+    rollback = client.post(f"/api/status/sources/policies/versions/{create_version['id']}/rollback")
+    assert rollback.status_code == 200
+    restored = rollback.json()
+    assert restored["name"] == "Source Policy Rollback"
+    assert restored["trigger_on_stale"] is False
+    fetched = client.get("/api/status/sources/policies/source-policy-rollback-1")
+    assert fetched.status_code == 200
+    row = fetched.json()
+    assert row["name"] == "Source Policy Rollback"
+    assert row["trigger_on_stale"] is False
+    versions_after = client.get("/api/status/sources/policies/source-policy-rollback-1/versions")
+    assert versions_after.status_code == 200
+    actions = [item["action"] for item in versions_after.json()]
+    assert "rollback" in actions
+
+
+def test_source_health_policy_version_compare_reports_field_diffs(client):
+    channel_payload = {
+        "id": "source-policy-compare-drop",
+        "name": "Source Policy Compare Drop",
+        "kind": "file",
+        "target": "source-policy-compare",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    create_payload = {
+        "id": "source-policy-compare-1",
+        "name": "Source Policy Compare",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-compare-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=create_payload).status_code == 200
+    update_payload = {**create_payload, "name": "Source Policy Compare Updated", "trigger_on_stale": True}
+    assert client.post("/api/status/sources/policies", json=update_payload).status_code == 200
+    versions = client.get("/api/status/sources/policies/source-policy-compare-1/versions")
+    assert versions.status_code == 200
+    rows = versions.json()
+    create_version = next(item for item in rows if item["action"] == "create")
+    update_version = next(item for item in rows if item["action"] == "update")
+    compare = client.get(
+        "/api/status/sources/policies/compare-versions",
+        params={"left_version_id": create_version["id"], "right_version_id": update_version["id"]},
+    )
+    assert compare.status_code == 200
+    payload = compare.json()
+    assert payload["policy_id"] == "source-policy-compare-1"
+    assert "name" in payload["changed_fields"]
+    assert "trigger_on_stale" in payload["changed_fields"]
+    diffs = {item["field"]: item for item in payload["diffs"]}
+    assert diffs["name"]["left_value"] == "Source Policy Compare"
+    assert diffs["name"]["right_value"] == "Source Policy Compare Updated"
+    assert diffs["trigger_on_stale"]["left_value"] is False
+    assert diffs["trigger_on_stale"]["right_value"] is True
+
+
+def test_source_health_policy_version_list_supports_action_and_text_filters(client):
+    channel_payload = {
+        "id": "source-policy-filter-drop",
+        "name": "Source Policy Filter Drop",
+        "kind": "file",
+        "target": "source-policy-filter",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    create_payload = {
+        "id": "source-policy-filter-1",
+        "name": "Source Policy Filter",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-filter-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=create_payload).status_code == 200
+    update_payload = {**create_payload, "name": "Source Policy Filter Updated", "trigger_on_stale": True}
+    assert client.post("/api/status/sources/policies", json=update_payload).status_code == 200
+    versions = client.get(
+        "/api/status/sources/policies/source-policy-filter-1/versions",
+        params={"action": "update"},
+    )
+    assert versions.status_code == 200
+    update_rows = versions.json()
+    assert len(update_rows) == 1
+    assert update_rows[0]["action"] == "update"
+    assert "trigger_on_stale" in update_rows[0]["changed_fields"]
+    filtered = client.get(
+        "/api/status/sources/policies/source-policy-filter-1/versions",
+        params={"query": "updated"},
+    )
+    assert filtered.status_code == 200
+    filtered_rows = filtered.json()
+    assert len(filtered_rows) == 1
+    assert filtered_rows[0]["action"] == "update"
+
+
+def test_source_health_policy_version_presets_can_be_saved_and_loaded(client):
+    channel_payload = {
+        "id": "source-policy-preset-drop",
+        "name": "Source Policy Preset Drop",
+        "kind": "file",
+        "target": "source-policy-preset",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-1",
+        "name": "Source Policy Preset",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    assert client.post("/api/status/sources/policies", json={**policy_payload, "trigger_on_stale": True}).status_code == 200
+    preset_payload = {
+        "id": "source-policy-version-preset-1",
+        "policy_id": "source-policy-preset-1",
+        "name": "Updates only",
+        "action_filter": "update",
+        "query": "trigger_on_stale",
+        "limit": 10,
+        "owner_scope": "shared",
+    }
+    saved = client.post("/api/status/sources/policies/version-presets", json=preset_payload)
+    assert saved.status_code == 200
+    rows = client.get("/api/status/sources/policies/source-policy-preset-1/version-presets")
+    assert rows.status_code == 200
+    preset_rows = rows.json()
+    assert len(preset_rows) == 1
+    assert preset_rows[0]["name"] == "Updates only"
+    fetched = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-1")
+    assert fetched.status_code == 200
+    assert fetched.json()["query"] == "trigger_on_stale"
+
+
+def test_scheduler_poll_runs_source_health_policy_worker_cycle(client):
+    channel_payload = {
+        "id": "worker-source-policy-drop",
+        "name": "Worker Source Policy Drop",
+        "kind": "file",
+        "target": "worker-source-policy",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    assert client.post(
+        "/api/observations/query",
+        json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+    ).status_code == 200
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fred down"))
+    try:
+        assert client.post(
+            "/api/observations/query",
+            json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+        ).status_code == 200
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    policy_payload = {
+        "id": "worker-source-policy-1",
+        "name": "Worker Macro Source Policy",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": True,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["worker-source-policy-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    poll = client.post("/api/reports/scheduler/poll")
+    assert poll.status_code == 200
+    payload = poll.json()
+    assert "source_policy_actions" in payload
+    assert payload["source_policy_triggered"] >= 1
+    runs = client.get("/api/status/sources/policies/runs", params={"trigger": "worker"})
+    assert runs.status_code == 200
+    assert len(runs.json()) >= 1
+
+
+def test_source_health_policy_reason_routing_and_escalation_channels(client):
+    base_channel = {
+        "id": "source-policy-base",
+        "name": "Source Policy Base",
+        "kind": "file",
+        "target": "source-policy-base",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    override_channel = {
+        "id": "source-policy-override",
+        "name": "Source Policy Override",
+        "kind": "file",
+        "target": "source-policy-override",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    escalation_channel = {
+        "id": "source-policy-escalation",
+        "name": "Source Policy Escalation",
+        "kind": "file",
+        "target": "source-policy-escalation",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=base_channel).status_code == 200
+    assert client.post("/api/notifications/channels", json=override_channel).status_code == 200
+    assert client.post("/api/notifications/channels", json=escalation_channel).status_code == 200
+    assert client.post(
+        "/api/observations/query",
+        json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+    ).status_code == 200
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fred down"))
+    try:
+        assert client.post(
+            "/api/observations/query",
+            json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+        ).status_code == 200
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    policy_payload = {
+        "id": "source-policy-routing-1",
+        "name": "Source Policy Routing",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": True,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-base"],
+        "reason_channel_overrides": {"degraded": ["source-policy-override"]},
+        "reason_severity": {"degraded": "high"},
+        "reason_subject_templates": {"degraded": "[{severity}] {source_id} {reason}"},
+        "escalation_channel_ids": ["source-policy-escalation"],
+        "escalation_failure_threshold": 1,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    ran = client.post("/api/status/sources/policies/run")
+    assert ran.status_code == 200
+    actions = ran.json()
+    triggered = next(item for item in actions if item.get("policy_id") == "source-policy-routing-1")
+    assert triggered["reason"] == "degraded"
+    assert triggered["severity"] == "high"
+    assert triggered["escalated"] is True
+    base_deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "source-policy-base", "event_type": "manual"},
+    )
+    override_deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "source-policy-override", "event_type": "manual"},
+    )
+    escalation_deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "source-policy-escalation", "event_type": "manual"},
+    )
+    assert base_deliveries.status_code == 200
+    assert override_deliveries.status_code == 200
+    assert escalation_deliveries.status_code == 200
+    assert len(base_deliveries.json()) == 0
+    assert len(override_deliveries.json()) >= 1
+    assert len(escalation_deliveries.json()) >= 1
+    assert override_deliveries.json()[0]["payload"]["severity"] == "high"
+
+
+def test_source_health_policy_schedule_window_suppresses_degraded_but_allows_down_when_configured(client):
+    channel_payload = {
+        "id": "source-policy-window-drop",
+        "name": "Source Policy Window Drop",
+        "kind": "file",
+        "target": "source-policy-window",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    degraded_policy = {
+        "id": "source-policy-window-degraded",
+        "name": "Window Degraded",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-window-drop"],
+        "active_weekdays": [0, 1, 2, 3, 4],
+        "active_hour_start": 9,
+        "active_hour_end": 18,
+        "allow_down_outside_schedule": False,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=degraded_policy).status_code == 200
+    down_policy = {
+        "id": "source-policy-window-down",
+        "name": "Window Down",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": False,
+        "trigger_on_down": True,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-window-drop"],
+        "active_weekdays": [0, 1, 2, 3, 4],
+        "active_hour_start": 9,
+        "active_hour_end": 18,
+        "allow_down_outside_schedule": True,
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=down_policy).status_code == 200
+
+    api_module.service._record_source_health(  # noqa: SLF001
+        source_id="macro:fred",
+        source_kind="macro",
+        provider="fred",
+        status="degraded",
+        last_checked_at=datetime(2026, 4, 19, 2, 0, 0),  # Sunday 02:00 local
+        last_success_at=datetime(2026, 4, 18, 12, 0, 0),
+        last_failure_at=datetime(2026, 4, 19, 2, 0, 0),
+        fallback_used=True,
+        error_message="window test degraded",
+    )
+    actions = api_module.service.run_source_health_policies(
+        now=datetime(2026, 4, 19, 2, 0, 0),
+        trigger="manual",
+    )
+    degraded_actions = [item for item in actions if item.get("policy_id") == "source-policy-window-degraded"]
+    assert any(item.get("status") == "skipped" and item.get("reason") == "outside_policy_window" for item in degraded_actions)
+    deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "source-policy-window-drop", "event_type": "manual"},
+    )
+    assert deliveries.status_code == 200
+    assert deliveries.json() == []
+
+    api_module.service._record_source_health(  # noqa: SLF001
+        source_id="macro:fred",
+        source_kind="macro",
+        provider="fred",
+        status="down",
+        last_checked_at=datetime(2026, 4, 19, 2, 5, 0),
+        last_failure_at=datetime(2026, 4, 19, 2, 5, 0),
+        fallback_used=True,
+        error_message="window test down",
+    )
+    actions_down = api_module.service.run_source_health_policies(
+        now=datetime(2026, 4, 19, 2, 5, 0),
+        trigger="manual",
+    )
+    down_actions = [item for item in actions_down if item.get("policy_id") == "source-policy-window-down"]
+    assert any(item.get("status") == "triggered" and item.get("reason") == "down" for item in down_actions)
+    deliveries_after = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "source-policy-window-drop", "event_type": "manual"},
+    )
+    assert deliveries_after.status_code == 200
+    assert len(deliveries_after.json()) >= 1
+    assert deliveries_after.json()[0]["payload"]["reason"] == "down"
+
+
+def test_source_health_policy_timezone_and_holiday_controls(client):
+    channel_payload = {
+        "id": "source-policy-tz-holiday-drop",
+        "name": "Source Policy TZ Holiday Drop",
+        "kind": "file",
+        "target": "source-policy-tz-holiday",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-tz-holiday-1",
+        "name": "TZ Holiday Policy",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-tz-holiday-drop"],
+        "active_weekdays": [0, 1, 2, 3, 4],
+        "active_hour_start": 9,
+        "active_hour_end": 18,
+        "allow_down_outside_schedule": False,
+        "timezone": "Asia/Shanghai",
+        "holiday_calendar": "none",
+        "holiday_dates": ["2026-04-22"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+
+    # 2026-04-22 02:00 UTC = 10:00 Asia/Shanghai (weekday business hour), but custom holiday => suppress
+    api_module.service._record_source_health(  # noqa: SLF001
+        source_id="macro:fred",
+        source_kind="macro",
+        provider="fred",
+        status="degraded",
+        last_checked_at=datetime(2026, 4, 22, 2, 0, 0, tzinfo=ZoneInfo("UTC")),
+        last_failure_at=datetime(2026, 4, 22, 2, 0, 0, tzinfo=ZoneInfo("UTC")),
+        fallback_used=True,
+        error_message="tz holiday degraded test",
+    )
+    actions_holiday = api_module.service.run_source_health_policies(
+        now=datetime(2026, 4, 22, 2, 0, 0, tzinfo=ZoneInfo("UTC")),
+        trigger="manual",
+    )
+    assert any(
+        item.get("policy_id") == "source-policy-tz-holiday-1"
+        and item.get("status") == "skipped"
+        and item.get("reason") == "outside_policy_window"
+        for item in actions_holiday
+    )
+
+    # Next day same UTC hour => local weekday business hour and not holiday => trigger
+    api_module.service._record_source_health(  # noqa: SLF001
+        source_id="macro:fred",
+        source_kind="macro",
+        provider="fred",
+        status="degraded",
+        last_checked_at=datetime(2026, 4, 23, 2, 0, 0, tzinfo=ZoneInfo("UTC")),
+        last_failure_at=datetime(2026, 4, 23, 2, 0, 0, tzinfo=ZoneInfo("UTC")),
+        fallback_used=True,
+        error_message="tz non-holiday degraded test",
+    )
+    actions_open = api_module.service.run_source_health_policies(
+        now=datetime(2026, 4, 23, 2, 0, 0, tzinfo=ZoneInfo("UTC")),
+        trigger="manual",
+    )
+    assert any(
+        item.get("policy_id") == "source-policy-tz-holiday-1"
+        and item.get("status") == "triggered"
+        for item in actions_open
+    )
+    deliveries = client.get(
+        "/api/notifications/deliveries",
+        params={"channel_id": "source-policy-tz-holiday-drop", "event_type": "manual"},
+    )
+    assert deliveries.status_code == 200
+    assert len(deliveries.json()) >= 1

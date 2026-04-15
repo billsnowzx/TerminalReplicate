@@ -17,6 +17,8 @@ from macro_platform.domain.models import (
     SavedScreen,
     ScenarioDefinition,
     ScreenSpec,
+    SourceHealthPolicy,
+    SourceHealthPolicyVersionPreset,
     Watchlist,
 )
 from macro_platform.services.platform import PlatformService
@@ -112,6 +114,162 @@ def freshness_status(country: str | None = None, topic: str | None = None):
     return [item.model_dump(mode="json") for item in service.get_freshness_status(country=country, topic=topic)]
 
 
+@app.get("/api/status/sources")
+def source_health_status(source_kind: str | None = None, status: str | None = None, limit: int = 200):
+    return [
+        item.model_dump(mode="json")
+        for item in service.list_source_health(source_kind=source_kind, status=status, limit=limit)
+    ]
+
+
+@app.get("/api/status/sources/summary")
+def source_health_summary():
+    return service.get_source_health_summary()
+
+
+@app.post("/api/status/sources/{source_id:path}/threshold")
+def set_source_stale_threshold(source_id: str, minutes: int = Query(ge=1)):
+    try:
+        return service.set_source_stale_threshold(source_id=source_id, minutes=minutes).model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/status/sources/policies")
+def list_source_health_policies(active_only: bool = False, include_archived: bool = False, limit: int = 200):
+    return [
+        item.model_dump(mode="json")
+        for item in service.list_source_health_policies(
+            active_only=active_only,
+            include_archived=include_archived,
+            limit=limit,
+        )
+    ]
+
+
+@app.get("/api/status/sources/policies/compare-versions")
+def compare_source_health_policy_versions(left_version_id: str, right_version_id: str):
+    try:
+        return service.compare_source_health_policy_versions(
+            left_version_id=left_version_id,
+            right_version_id=right_version_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy version not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/status/sources/policies/runs")
+def list_source_health_policy_runs(trigger: str | None = None, limit: int = 100):
+    return [item.model_dump(mode="json") for item in service.list_source_health_policy_runs(trigger=trigger, limit=limit)]
+
+
+@app.get("/api/status/sources/policies/runs/{run_id}")
+def get_source_health_policy_run(run_id: str):
+    try:
+        return service.get_source_health_policy_run(run_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy run not found.") from exc
+
+
+@app.get("/api/status/sources/policies/{policy_id}")
+def get_source_health_policy(policy_id: str):
+    try:
+        return service.get_source_health_policy(policy_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+
+
+@app.get("/api/status/sources/policies/{policy_id}/versions")
+def list_source_health_policy_versions(policy_id: str, limit: int = 50, action: str | None = None, query: str | None = None):
+    try:
+        return [
+            item.model_dump(mode="json")
+            for item in service.list_source_health_policy_versions(policy_id=policy_id, limit=limit, action=action, query=query)
+        ]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+
+
+@app.get("/api/status/sources/policies/{policy_id}/version-presets")
+def list_source_health_policy_version_presets(policy_id: str, limit: int = 50):
+    try:
+        return [
+            item.model_dump(mode="json")
+            for item in service.list_source_health_policy_version_presets(policy_id=policy_id, limit=limit)
+        ]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+
+
+@app.get("/api/status/sources/policies/version-presets/{preset_id}")
+def get_source_health_policy_version_preset(preset_id: str):
+    try:
+        return service.get_source_health_policy_version_preset(preset_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
+
+
+@app.post("/api/status/sources/policies/version-presets")
+def save_source_health_policy_version_preset(preset: SourceHealthPolicyVersionPreset):
+    try:
+        return service.save_source_health_policy_version_preset(preset).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/status/sources/policies/versions/{version_id}")
+def get_source_health_policy_version(version_id: str):
+    try:
+        return service.get_source_health_policy_version(version_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy version not found.") from exc
+
+
+@app.post("/api/status/sources/policies/versions/{version_id}/rollback")
+def rollback_source_health_policy_version(version_id: str):
+    try:
+        return service.rollback_source_health_policy_version(version_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy version not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/status/sources/policies")
+def save_source_health_policy(policy: SourceHealthPolicy):
+    try:
+        return service.save_source_health_policy(policy).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/status/sources/policies/{policy_id}/archive")
+def archive_source_health_policy(policy_id: str, reason: str | None = None):
+    try:
+        return service.archive_source_health_policy(policy_id=policy_id, reason=reason).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+
+
+@app.post("/api/status/sources/policies/{policy_id}/restore")
+def restore_source_health_policy(policy_id: str):
+    try:
+        return service.restore_source_health_policy(policy_id=policy_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+
+
+@app.post("/api/status/sources/policies/run")
+def run_source_health_policies():
+    return service.run_source_health_policies()
+
+
 @app.get("/api/monitors/changes")
 def change_monitor(
     country: str | None = None,
@@ -179,7 +337,36 @@ def get_notification_channel(channel_id: str):
 
 @app.post("/api/notifications/channels")
 def save_notification_channel(channel: NotificationChannel):
-    return service.save_notification_channel(channel).model_dump(mode="json")
+    try:
+        return service.save_notification_channel(channel).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Referenced notification channel not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/notifications/channels/{channel_id}/pause")
+def pause_notification_channel(channel_id: str, minutes: int = Query(default=60, ge=1), reason: str | None = None):
+    try:
+        return service.pause_notification_channel(channel_id, minutes=minutes, reason=reason).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
+
+
+@app.post("/api/notifications/channels/{channel_id}/resume")
+def resume_notification_channel(channel_id: str):
+    try:
+        return service.resume_notification_channel(channel_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
+
+
+@app.get("/api/notifications/health")
+def list_notification_channel_health(channel_id: str | None = None, window_hours: int = Query(default=24, ge=1, le=168)):
+    return [
+        item.model_dump(mode="json")
+        for item in service.list_notification_channel_health(channel_id=channel_id, window_hours=window_hours)
+    ]
 
 
 @app.post("/api/notifications/channels/{channel_id}/test")
@@ -208,6 +395,135 @@ def list_notification_deliveries(
     ]
 
 
+@app.get("/api/notifications/routing")
+def list_notification_routing_audits(
+    channel_id: str | None = None,
+    event_type: str | None = None,
+    decision: str | None = None,
+    limit: int = 200,
+):
+    return [
+        item.model_dump(mode="json")
+        for item in service.list_notification_routing_audits(
+            channel_id=channel_id,
+            event_type=event_type,
+            decision=decision,
+            limit=limit,
+        )
+    ]
+
+
+@app.get("/api/notifications/routing/summary")
+def get_notification_routing_summary(
+    channel_id: str | None = None,
+    event_type: str | None = None,
+    window_hours: int = Query(default=24, ge=1, le=168),
+):
+    return service.get_notification_routing_summary(
+        channel_id=channel_id,
+        event_type=event_type,
+        window_hours=window_hours,
+    )
+
+
+@app.post("/api/notifications/routing/export")
+def export_notification_routing_audits(
+    format: str = Query(default="csv"),
+    channel_id: str | None = None,
+    event_type: str | None = None,
+    decision: str | None = None,
+    limit: int = Query(default=5000, ge=1, le=20000),
+):
+    try:
+        return service.export_notification_routing_audits(
+            format=format,
+            channel_id=channel_id,
+            event_type=event_type,
+            decision=decision,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/notifications/recovery/run")
+def run_notification_channel_recovery():
+    return service.run_notification_channel_recovery()
+
+
+@app.get("/api/ops/incidents")
+def list_ops_incidents(
+    status: str | None = None,
+    source_channel_id: str | None = None,
+    overdue_only: bool = False,
+    limit: int = 200,
+):
+    return [
+        item.model_dump(mode="json")
+        for item in service.list_ops_incidents(
+            status=status,
+            source_channel_id=source_channel_id,
+            overdue_only=overdue_only,
+            limit=limit,
+        )
+    ]
+
+
+@app.get("/api/ops/incidents/summary")
+def get_ops_incident_summary():
+    return service.get_ops_incident_summary()
+
+
+@app.get("/api/ops/incidents/{incident_id}")
+def get_ops_incident(incident_id: str):
+    try:
+        return service.get_ops_incident(incident_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Ops incident not found.") from exc
+
+
+@app.post("/api/ops/incidents/{incident_id}/status")
+def update_ops_incident_status(incident_id: str, status: str = Query(), notes: str | None = None):
+    try:
+        return service.update_ops_incident_status(incident_id, status=status, notes=notes).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Ops incident not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/ops/incidents/{incident_id}/update")
+def update_ops_incident(
+    incident_id: str,
+    status: str | None = None,
+    owner: str | None = None,
+    priority: str | None = None,
+    sla_minutes: int | None = None,
+    notes: str | None = None,
+):
+    try:
+        return service.update_ops_incident(
+            incident_id=incident_id,
+            status=status,
+            owner=owner,
+            priority=priority,
+            sla_minutes=sla_minutes,
+            notes=notes,
+        ).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Ops incident not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/notifications/routing/{audit_id}")
+def get_notification_routing_audit(audit_id: str):
+    try:
+        return service.get_notification_routing_audit(audit_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification routing audit not found.") from exc
+
+
 @app.get("/api/notifications/deliveries/{delivery_id}")
 def get_notification_delivery(delivery_id: str):
     try:
@@ -222,6 +538,49 @@ def retry_notification_delivery(delivery_id: str):
         return service.retry_notification_delivery(delivery_id).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification delivery not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/notifications/digests")
+def list_notification_digests(channel_id: str | None = None, status: str | None = None, limit: int = 100):
+    return [
+        item.model_dump(mode="json")
+        for item in service.list_notification_digests(channel_id=channel_id, status=status, limit=limit)
+    ]
+
+
+@app.get("/api/notifications/digests/{digest_id}")
+def get_notification_digest(digest_id: str):
+    try:
+        return service.get_notification_digest(digest_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification digest not found.") from exc
+
+
+@app.post("/api/notifications/channels/{channel_id}/digest")
+def send_notification_digest(
+    channel_id: str,
+    status: str = "new",
+    limit: int = 25,
+    publish_included: bool = False,
+):
+    try:
+        return service.send_notification_digest(
+            channel_id=channel_id,
+            status=status,
+            limit=limit,
+            publish_included=publish_included,
+        ).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/notifications/digests/run-due")
+def run_due_notification_digests():
+    return [item.model_dump(mode="json") for item in service.run_due_notification_digests()]
 
 
 @app.post("/api/screens/run")

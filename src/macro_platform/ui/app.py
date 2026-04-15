@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+import json
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 import pandas as pd
@@ -21,6 +22,8 @@ from macro_platform.domain.models import (
     ScenarioShock,
     ScreenFilter,
     ScreenSpec,
+    SourceHealthPolicy,
+    SourceHealthPolicyVersionPreset,
     Watchlist,
 )
 from macro_platform.services.platform import PlatformService
@@ -51,9 +54,11 @@ view = st.sidebar.selectbox(
         "Cross Asset Monitor",
         "Regime Monitor",
         "Release Calendar",
+        "Data Quality",
         "Change Monitor",
         "Alert Center",
         "Notification Center",
+        "Ops Incidents",
         "Screening Lab",
         "Research Library",
         "Portfolio Lab",
@@ -123,6 +128,451 @@ elif view == "Release Calendar":
     with right:
         st.caption("Freshness status")
         st.dataframe(freshness, use_container_width=True)
+
+elif view == "Data Quality":
+    st.subheader("Data Quality And Source Health")
+    summary = service.get_source_health_summary()
+    metric_total, metric_healthy, metric_degraded, metric_stale = st.columns(4)
+    metric_total.metric("Tracked Sources", summary.get("total", 0))
+    metric_healthy.metric("Healthy", summary.get("healthy", 0))
+    metric_degraded.metric("Degraded", summary.get("degraded", 0) + summary.get("down", 0))
+    metric_stale.metric("Stale", summary.get("stale", 0))
+    kind_filter = st.selectbox("Source kind", ["all", "macro", "market"])
+    status_filter = st.selectbox("Status", ["all", "healthy", "degraded", "down", "unknown"])
+    rows = pd.DataFrame(
+        [
+            item.model_dump(mode="json")
+            for item in service.list_source_health(
+                source_kind=None if kind_filter == "all" else kind_filter,
+                status=None if status_filter == "all" else status_filter,
+                limit=200,
+            )
+        ]
+    )
+    st.dataframe(rows, use_container_width=True)
+    all_sources = service.list_source_health(limit=500)
+    left, right = st.columns(2)
+    with left:
+        st.caption("Source threshold override")
+        source_options = [item.id for item in all_sources]
+        if source_options:
+            selected_source_id = st.selectbox("Source", source_options)
+            selected_source = next(item for item in all_sources if item.id == selected_source_id)
+            threshold_minutes = st.number_input(
+                "Stale threshold (minutes)",
+                min_value=1,
+                value=int(selected_source.stale_threshold_minutes),
+                step=30,
+            )
+            if st.button("Update source threshold"):
+                updated = service.set_source_stale_threshold(selected_source_id, int(threshold_minutes))
+                st.success(f"Updated {updated.id} stale threshold to {updated.stale_threshold_minutes} minutes")
+        else:
+            st.info("No tracked sources yet. Query data first to initialize source records.")
+    with right:
+        st.caption("Source health policy")
+        policy_catalog = service.list_source_health_policies(include_archived=True, limit=200)
+        policy_selector_options = ["Create new"] + [item.id for item in policy_catalog]
+        selected_policy_ref = st.selectbox(
+            "Policy profile",
+            policy_selector_options,
+            format_func=lambda x: "Create new policy" if x == "Create new" else next(
+                f"{item.name} ({'active' if item.active else 'inactive'})"
+                for item in policy_catalog
+                if item.id == x
+            ),
+        )
+        editing_policy = None if selected_policy_ref == "Create new" else next(
+            item for item in policy_catalog if item.id == selected_policy_ref
+        )
+        state_key = "new" if editing_policy is None else editing_policy.id
+
+        policy_name = st.text_input(
+            "Policy name",
+            value="" if editing_policy is None else editing_policy.name,
+            key=f"source_policy_name_{state_key}",
+        )
+        policy_kind_default = "all" if editing_policy is None or editing_policy.source_kind is None else editing_policy.source_kind
+        policy_kind = st.selectbox(
+            "Policy source kind",
+            ["all", "macro", "market"],
+            index=["all", "macro", "market"].index(policy_kind_default),
+            key=f"source_policy_kind_{state_key}",
+        )
+        policy_source_scope_default = (
+            "single source"
+            if editing_policy is not None and editing_policy.source_id
+            else "all"
+        )
+        policy_source_scope = st.selectbox(
+            "Policy source scope",
+            ["all", "single source"],
+            index=["all", "single source"].index(policy_source_scope_default),
+            key=f"source_policy_scope_{state_key}",
+        )
+        policy_source_id = None
+        if policy_source_scope == "single source" and source_options:
+            source_index = 0
+            if editing_policy is not None and editing_policy.source_id in source_options:
+                source_index = source_options.index(editing_policy.source_id)
+            policy_source_id = st.selectbox(
+                "Policy source",
+                source_options,
+                index=source_index,
+                key=f"source_policy_source_{state_key}",
+            )
+        trigger_degraded = st.checkbox(
+            "Trigger on degraded",
+            value=True if editing_policy is None else editing_policy.trigger_on_degraded,
+            key=f"source_policy_trigger_degraded_{state_key}",
+        )
+        trigger_down = st.checkbox(
+            "Trigger on down",
+            value=True if editing_policy is None else editing_policy.trigger_on_down,
+            key=f"source_policy_trigger_down_{state_key}",
+        )
+        trigger_stale = st.checkbox(
+            "Trigger on stale",
+            value=True if editing_policy is None else editing_policy.trigger_on_stale,
+            key=f"source_policy_trigger_stale_{state_key}",
+        )
+        min_failures = st.number_input(
+            "Min consecutive failures",
+            min_value=1,
+            value=1 if editing_policy is None else int(editing_policy.min_consecutive_failures),
+            step=1,
+            key=f"source_policy_min_failures_{state_key}",
+        )
+        policy_stale_threshold = st.number_input(
+            "Override stale threshold (minutes, optional)",
+            min_value=0,
+            value=0 if editing_policy is None or editing_policy.stale_threshold_minutes is None else int(editing_policy.stale_threshold_minutes),
+            step=30,
+            key=f"source_policy_stale_threshold_{state_key}",
+        )
+        policy_cooldown = st.number_input(
+            "Policy cooldown (minutes)",
+            min_value=0,
+            value=60 if editing_policy is None else int(editing_policy.cooldown_minutes),
+            step=5,
+            key=f"source_policy_cooldown_{state_key}",
+        )
+        channels = service.list_notification_channels()
+        selected_channels = st.multiselect(
+            "Notification channels",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.notification_channel_ids,
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_channels_{state_key}",
+        )
+        severity_down_default = "high" if editing_policy is None else editing_policy.reason_severity.get("down", "high")
+        severity_degraded_default = "medium" if editing_policy is None else editing_policy.reason_severity.get("degraded", "medium")
+        severity_stale_default = "low" if editing_policy is None else editing_policy.reason_severity.get("stale", "low")
+        severity_down = st.selectbox("Severity for down", ["high", "medium", "low"], index=["high", "medium", "low"].index(severity_down_default), key=f"source_policy_severity_down_{state_key}")
+        severity_degraded = st.selectbox("Severity for degraded", ["high", "medium", "low"], index=["high", "medium", "low"].index(severity_degraded_default), key=f"source_policy_severity_degraded_{state_key}")
+        severity_stale = st.selectbox("Severity for stale", ["high", "medium", "low"], index=["high", "medium", "low"].index(severity_stale_default), key=f"source_policy_severity_stale_{state_key}")
+        subject_template_down = st.text_input(
+            "Subject template (down)",
+            value="[{severity}] {source_id} is {status} ({reason})" if editing_policy is None else editing_policy.reason_subject_templates.get("down", "[{severity}] {source_id} is {status} ({reason})"),
+            help="Use placeholders: {source_id}, {source_kind}, {provider}, {reason}, {status}, {severity}",
+            key=f"source_policy_subject_down_{state_key}",
+        )
+        subject_template_degraded = st.text_input(
+            "Subject template (degraded)",
+            value="[{severity}] {source_id} is {status} ({reason})" if editing_policy is None else editing_policy.reason_subject_templates.get("degraded", "[{severity}] {source_id} is {status} ({reason})"),
+            key=f"source_policy_subject_degraded_{state_key}",
+        )
+        subject_template_stale = st.text_input(
+            "Subject template (stale)",
+            value="[{severity}] {source_id} is {status} ({reason})" if editing_policy is None else editing_policy.reason_subject_templates.get("stale", "[{severity}] {source_id} is {status} ({reason})"),
+            key=f"source_policy_subject_stale_{state_key}",
+        )
+        override_down = st.multiselect(
+            "Reason channels: down",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.reason_channel_overrides.get("down", []),
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_channels_down_{state_key}",
+        )
+        override_degraded = st.multiselect(
+            "Reason channels: degraded",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.reason_channel_overrides.get("degraded", []),
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_channels_degraded_{state_key}",
+        )
+        override_stale = st.multiselect(
+            "Reason channels: stale",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.reason_channel_overrides.get("stale", []),
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_channels_stale_{state_key}",
+        )
+        escalation_channels = st.multiselect(
+            "Escalation channels",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.escalation_channel_ids,
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_escalation_channels_{state_key}",
+        )
+        escalation_threshold = st.number_input(
+            "Escalation failure threshold",
+            min_value=1,
+            value=3 if editing_policy is None else int(editing_policy.escalation_failure_threshold),
+            step=1,
+            key=f"source_policy_escalation_threshold_{state_key}",
+        )
+        active_weekdays = st.multiselect(
+            "Active weekdays",
+            options=list(range(7)),
+            default=[0, 1, 2, 3, 4, 5, 6] if editing_policy is None else editing_policy.active_weekdays,
+            format_func=lambda x: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][x],
+            key=f"source_policy_active_weekdays_{state_key}",
+        )
+        policy_timezone = st.text_input("Policy timezone", value="Asia/Shanghai" if editing_policy is None else editing_policy.timezone, key=f"source_policy_timezone_{state_key}")
+        holiday_calendar_default = "none" if editing_policy is None else editing_policy.holiday_calendar
+        holiday_calendar = st.selectbox(
+            "Holiday calendar",
+            ["none", "us", "uk", "eu", "jp", "cn"],
+            index=["none", "us", "uk", "eu", "jp", "cn"].index(holiday_calendar_default),
+            key=f"source_policy_holiday_calendar_{state_key}",
+        )
+        custom_holidays_text = st.text_input(
+            "Custom holidays (YYYY-MM-DD, comma-separated)",
+            value="" if editing_policy is None else ", ".join(item.isoformat() for item in editing_policy.holiday_dates),
+            key=f"source_policy_custom_holidays_{state_key}",
+        )
+        active_hour_start = st.number_input("Active hour start", min_value=0, max_value=23, value=0 if editing_policy is None else int(editing_policy.active_hour_start), step=1, key=f"source_policy_active_hour_start_{state_key}")
+        active_hour_end = st.number_input("Active hour end", min_value=1, max_value=24, value=24 if editing_policy is None else int(editing_policy.active_hour_end), step=1, key=f"source_policy_active_hour_end_{state_key}")
+        allow_down_outside_schedule = st.checkbox(
+            "Allow down alerts outside schedule",
+            value=True if editing_policy is None else editing_policy.allow_down_outside_schedule,
+            key=f"source_policy_allow_down_outside_{state_key}",
+        )
+        policy_active = st.checkbox(
+            "Policy active",
+            value=True if editing_policy is None else editing_policy.active,
+            key=f"source_policy_active_{state_key}",
+        )
+        save_label = "Save source health policy" if editing_policy is None else "Update source health policy"
+        if st.button(save_label) and policy_name.strip():
+            custom_holidays = []
+            parse_ok = True
+            if custom_holidays_text.strip():
+                try:
+                    custom_holidays = [
+                        date.fromisoformat(part.strip())
+                        for part in custom_holidays_text.split(",")
+                        if part.strip()
+                    ]
+                except ValueError:
+                    st.error("Invalid custom holiday format. Use YYYY-MM-DD, comma-separated.")
+                    parse_ok = False
+            if not parse_ok:
+                st.stop()
+            policy = SourceHealthPolicy(
+                id=f"source-health-policy-{uuid4().hex[:8]}" if editing_policy is None else editing_policy.id,
+                name=policy_name.strip(),
+                source_kind=None if policy_kind == "all" else policy_kind,
+                source_id=policy_source_id,
+                trigger_on_degraded=trigger_degraded,
+                trigger_on_down=trigger_down,
+                trigger_on_stale=trigger_stale,
+                min_consecutive_failures=int(min_failures),
+                stale_threshold_minutes=int(policy_stale_threshold) if policy_stale_threshold > 0 else None,
+                cooldown_minutes=int(policy_cooldown),
+                notification_channel_ids=selected_channels,
+                reason_channel_overrides={
+                    "down": override_down,
+                    "degraded": override_degraded,
+                    "stale": override_stale,
+                },
+                reason_severity={
+                    "down": severity_down,
+                    "degraded": severity_degraded,
+                    "stale": severity_stale,
+                },
+                reason_subject_templates={
+                    "down": subject_template_down or "Source Health Alert [{severity}]: {source_id} ({reason})",
+                    "degraded": subject_template_degraded or "Source Health Alert [{severity}]: {source_id} ({reason})",
+                    "stale": subject_template_stale or "Source Health Alert [{severity}]: {source_id} ({reason})",
+                },
+                escalation_channel_ids=escalation_channels,
+                escalation_failure_threshold=int(escalation_threshold),
+                active_weekdays=active_weekdays,
+                active_hour_start=int(active_hour_start),
+                active_hour_end=int(active_hour_end),
+                allow_down_outside_schedule=allow_down_outside_schedule,
+                timezone=policy_timezone.strip() or "UTC",
+                holiday_calendar=holiday_calendar,
+                holiday_dates=custom_holidays,
+                active=policy_active,
+                last_triggered_at=None if editing_policy is None else editing_policy.last_triggered_at,
+            )
+            service.save_source_health_policy(policy)
+            st.success(f"Saved policy: {policy.name} ({'active' if policy.active else 'inactive'})")
+        if editing_policy is not None:
+            lifecycle_left, lifecycle_right = st.columns(2)
+            with lifecycle_left:
+                if editing_policy.archived_at is None:
+                    archive_reason = st.text_input(
+                        "Archive reason",
+                        value="",
+                        key=f"source_policy_archive_reason_{state_key}",
+                    )
+                    if st.button("Archive policy", key=f"source_policy_archive_button_{state_key}"):
+                        updated = service.archive_source_health_policy(editing_policy.id, reason=archive_reason or None)
+                        st.success(f"Archived policy: {updated.name}")
+                else:
+                    st.caption(f"Archived at: {editing_policy.archived_at}")
+                    if editing_policy.archived_reason:
+                        st.caption(f"Reason: {editing_policy.archived_reason}")
+            with lifecycle_right:
+            if editing_policy.archived_at is not None:
+                if st.button("Restore policy", key=f"source_policy_restore_button_{state_key}"):
+                    updated = service.restore_source_health_policy(editing_policy.id)
+                    st.success(f"Restored policy: {updated.name}")
+            version_presets = service.list_source_health_policy_version_presets(editing_policy.id, limit=50)
+            preset_selector = st.selectbox(
+                "Version preset",
+                ["Custom"] + [item.id for item in version_presets],
+                format_func=lambda x: "Custom filters" if x == "Custom" else next(
+                    f"{item.name} (action={item.action_filter or 'all'}, query={item.query or 'blank'})"
+                    for item in version_presets
+                    if item.id == x
+                ),
+                key=f"source_policy_version_preset_select_{state_key}",
+            )
+            load_left, load_right = st.columns(2)
+            with load_left:
+                if preset_selector != "Custom" and st.button("Load preset", key=f"source_policy_load_version_preset_{state_key}"):
+                    preset = next(item for item in version_presets if item.id == preset_selector)
+                    st.session_state[f"source_policy_version_action_{state_key}"] = preset.action_filter or "all"
+                    st.session_state[f"source_policy_version_query_{state_key}"] = preset.query or ""
+                    st.session_state[f"source_policy_version_limit_{state_key}"] = int(preset.limit)
+                    st.rerun()
+            version_action_filter = st.selectbox(
+                "Version action filter",
+                ["all", "create", "update", "archive", "restore", "rollback"],
+                key=f"source_policy_version_action_{state_key}",
+            )
+            version_query = st.text_input(
+                "Version search",
+                value="",
+                placeholder="Field, summary, or changed field",
+                key=f"source_policy_version_query_{state_key}",
+            )
+            version_limit = st.number_input(
+                "Version history limit",
+                min_value=1,
+                max_value=200,
+                value=20,
+                step=5,
+                key=f"source_policy_version_limit_{state_key}",
+            )
+            with load_right:
+                preset_name = st.text_input(
+                    "Save preset as",
+                    value="",
+                    key=f"source_policy_version_preset_name_{state_key}",
+                )
+                if st.button("Save preset", key=f"source_policy_save_version_preset_{state_key}") and preset_name.strip():
+                    preset = SourceHealthPolicyVersionPreset(
+                        id=f"source-policy-version-preset-{uuid4().hex[:8]}",
+                        policy_id=editing_policy.id,
+                        name=preset_name.strip(),
+                        action_filter=None if version_action_filter == "all" else version_action_filter,
+                        query=version_query or None,
+                        limit=int(version_limit),
+                        owner_scope="shared",
+                    )
+                    service.save_source_health_policy_version_preset(preset)
+                    st.success(f"Saved version preset: {preset.name}")
+            version_rows = service.list_source_health_policy_versions(
+                editing_policy.id,
+                limit=int(version_limit),
+                action=None if version_action_filter == "all" else version_action_filter,
+                query=version_query or None,
+            )
+            versions = pd.DataFrame([item.model_dump(mode="json") for item in version_rows])
+            st.caption("Policy versions")
+            st.caption(f"{len(version_rows)} version(s) matched the current filters")
+            st.dataframe(versions, use_container_width=True)
+            if not versions.empty:
+                rollback_version = st.selectbox(
+                    "Rollback to version",
+                    version_rows,
+                    format_func=lambda item: f"v{item.version_number} - {item.action} - {item.changed_at}",
+                    key=f"source_policy_rollback_version_{state_key}",
+                )
+                if st.button("Rollback to selected version", key=f"source_policy_rollback_button_{state_key}"):
+                    restored = service.rollback_source_health_policy_version(rollback_version.id)
+                    st.success(f"Rolled back policy: {restored.name}")
+                compare_left, compare_right = st.columns(2)
+                with compare_left:
+                    left_version = st.selectbox(
+                        "Compare left version",
+                        version_rows,
+                        format_func=lambda item: f"v{item.version_number} - {item.action}",
+                        key=f"source_policy_compare_left_{state_key}",
+                    )
+                with compare_right:
+                    right_version = st.selectbox(
+                        "Compare right version",
+                        version_rows,
+                        format_func=lambda item: f"v{item.version_number} - {item.action}",
+                        key=f"source_policy_compare_right_{state_key}",
+                    )
+                if st.button("Compare selected versions", key=f"source_policy_compare_button_{state_key}"):
+                    st.session_state[f"source_policy_compare_result_{state_key}"] = service.compare_source_health_policy_versions(
+                        left_version.id,
+                        right_version.id,
+                    )
+                compare_result = st.session_state.get(f"source_policy_compare_result_{state_key}")
+                if compare_result:
+                    st.caption(
+                        f"Comparing v{compare_result['left_version_number']} ({compare_result['left_action']}) "
+                        f"to v{compare_result['right_version_number']} ({compare_result['right_action']})"
+                    )
+                    diff_frame = pd.DataFrame(compare_result["diffs"])
+                    st.dataframe(diff_frame, use_container_width=True)
+                    json_payload = json.dumps(compare_result, indent=2, default=str)
+                    csv_payload = diff_frame.to_csv(index=False) if not diff_frame.empty else "field,left_value,right_value\n"
+                    download_left, download_right = st.columns(2)
+                    with download_left:
+                        st.download_button(
+                            "Download compare JSON",
+                            data=json_payload,
+                            file_name=f"source-policy-compare-{state_key}.json",
+                            mime="application/json",
+                            key=f"source_policy_compare_json_{state_key}",
+                        )
+                    with download_right:
+                        st.download_button(
+                            "Download compare CSV",
+                            data=csv_payload,
+                            file_name=f"source-policy-compare-{state_key}.csv",
+                            mime="text/csv",
+                            key=f"source_policy_compare_csv_{state_key}",
+                        )
+        if st.button("Run source health policies"):
+            actions = service.run_source_health_policies()
+            st.success(f"Executed source health policies: {len(actions)} action(s)")
+            st.dataframe(pd.DataFrame(actions), use_container_width=True)
+        policies = pd.DataFrame([item.model_dump(mode="json") for item in service.list_source_health_policies(include_archived=True, limit=200)])
+        st.dataframe(policies, use_container_width=True)
+        policy_runs = pd.DataFrame([item.model_dump(mode="json") for item in service.list_source_health_policy_runs(limit=50)])
+        st.caption("Recent policy runs")
+        st.dataframe(policy_runs, use_container_width=True)
+    stale_rows = pd.DataFrame(
+        [
+            item.model_dump(mode="json")
+            for item in service.list_source_health(limit=200)
+            if item.is_stale or item.status in {"degraded", "down"}
+        ]
+    )
+    st.caption("Attention required")
+    st.dataframe(stale_rows, use_container_width=True)
 
 elif view == "Change Monitor":
     st.subheader("Change Monitor")
@@ -241,8 +691,108 @@ elif view == "Notification Center":
     left, right = st.columns(2)
     with left:
         st.caption("Create notification channel")
+        existing_channels = service.list_notification_channels()
         channel_name = st.text_input("Channel name", value="")
         channel_kind = st.selectbox("Channel kind", ["file", "email", "webhook", "slack"])
+        channel_event_types = st.multiselect(
+            "Route event types",
+            options=["alert_event", "report_job", "manual"],
+            default=["alert_event", "report_job", "manual"],
+        )
+        channel_min_significance = st.selectbox("Minimum alert significance", ["high", "medium", "low"], index=2)
+        channel_delivery_mode = st.selectbox("Alert delivery mode", ["immediate", "digest"])
+        fallback_channel_ids = st.multiselect(
+            "Fallback channels",
+            options=[item.id for item in existing_channels],
+            format_func=lambda x: next(item.name for item in existing_channels if item.id == x),
+        )
+        escalation_channel_ids = st.multiselect(
+            "Escalation channels",
+            options=[item.id for item in existing_channels],
+            format_func=lambda x: next(item.name for item in existing_channels if item.id == x),
+        )
+        escalation_min_significance = st.selectbox("Escalation threshold", ["high", "medium", "low"], index=0)
+        ops_escalation_enabled = st.checkbox("Enable ops escalation policy", value=False)
+        ops_escalation_channel_ids = st.multiselect(
+            "Ops escalation targets",
+            options=[item.id for item in existing_channels],
+            format_func=lambda x: next(item.name for item in existing_channels if item.id == x),
+        )
+        ops_escalation_window_hours = st.slider(
+            "Ops escalation window (hours)",
+            min_value=1,
+            max_value=168,
+            value=6,
+            step=1,
+        )
+        ops_escalation_threshold = st.slider(
+            "Ops escalation adverse decision threshold",
+            min_value=1,
+            max_value=100,
+            value=5,
+            step=1,
+        )
+        ops_escalation_cooldown_minutes = st.slider(
+            "Ops escalation cooldown (minutes)",
+            min_value=0,
+            max_value=1440,
+            value=60,
+            step=5,
+        )
+        cooldown_minutes = st.slider("Cooldown minutes", min_value=0, max_value=1440, value=0, step=5)
+        duplicate_window_minutes = st.slider("Duplicate suppression window", min_value=0, max_value=1440, value=60, step=5)
+        retry_backoff_minutes = st.slider("Retry backoff minutes", min_value=0, max_value=240, value=15, step=5)
+        max_retry_attempts = st.slider("Max retry attempts", min_value=1, max_value=10, value=3, step=1)
+        auto_pause_enabled = st.checkbox("Enable auto-pause on failures", value=False)
+        auto_pause_window_hours = st.slider("Auto-pause lookback (hours)", min_value=1, max_value=168, value=24, step=1)
+        auto_pause_error_rate_threshold = st.slider(
+            "Auto-pause error-rate threshold",
+            min_value=0.05,
+            max_value=1.0,
+            value=0.5,
+            step=0.05,
+        )
+        auto_pause_consecutive_failures = st.slider(
+            "Auto-pause consecutive failures",
+            min_value=1,
+            max_value=20,
+            value=3,
+            step=1,
+        )
+        auto_pause_minutes = st.slider("Auto-pause duration (minutes)", min_value=5, max_value=1440, value=60, step=5)
+        auto_resume_enabled = st.checkbox("Enable auto-resume after auto-pause", value=False)
+        recovery_probe_profile = st.selectbox("Recovery probe profile", ["minimal", "standard", "verbose"], index=1)
+        recovery_probe_payload_text = st.text_area("Recovery probe payload override (JSON)", value="")
+        recovery_probe_cooldown_minutes = st.slider(
+            "Recovery probe cooldown (minutes)",
+            min_value=0,
+            max_value=240,
+            value=30,
+            step=5,
+        )
+        recovery_probe_max_per_hour = st.slider(
+            "Recovery probe max per hour",
+            min_value=1,
+            max_value=20,
+            value=2,
+            step=1,
+        )
+        recovery_probe_payload = {}
+        if recovery_probe_payload_text.strip():
+            try:
+                parsed_payload = json.loads(recovery_probe_payload_text)
+                if isinstance(parsed_payload, dict):
+                    recovery_probe_payload = parsed_payload
+                else:
+                    st.error("Recovery probe payload must be a JSON object.")
+            except json.JSONDecodeError:
+                st.error("Recovery probe payload JSON is invalid.")
+        pause_minutes = st.slider("Pause for minutes (optional)", min_value=0, max_value=1440, value=0, step=15)
+        pause_reason = st.text_input("Pause reason", value="")
+        digest_hour_local = st.slider("Digest hour (local)", min_value=0, max_value=23, value=8)
+        digest_limit = st.slider("Default digest rows", min_value=1, max_value=50, value=25, step=1)
+        digest_status_filter = st.selectbox("Default digest status", ["new", "published", "dismissed"])
+        digest_publish_included = st.checkbox("Publish digest events after send", value=False)
         target_help = {
             "file": "Folder or label for file drops",
             "email": "Recipient email address",
@@ -258,6 +808,37 @@ elif view == "Notification Center":
                 name=channel_name.strip(),
                 kind=channel_kind,
                 target=channel_target.strip(),
+                event_types=channel_event_types or ["manual"],
+                min_significance=channel_min_significance,
+                delivery_mode=channel_delivery_mode,
+                fallback_channel_ids=fallback_channel_ids,
+                escalation_channel_ids=escalation_channel_ids,
+                escalation_min_significance=escalation_min_significance,
+                ops_escalation_enabled=ops_escalation_enabled,
+                ops_escalation_channel_ids=ops_escalation_channel_ids,
+                ops_escalation_window_hours=ops_escalation_window_hours,
+                ops_escalation_threshold=ops_escalation_threshold,
+                ops_escalation_cooldown_minutes=ops_escalation_cooldown_minutes,
+                cooldown_minutes=cooldown_minutes,
+                duplicate_window_minutes=duplicate_window_minutes,
+                retry_backoff_minutes=retry_backoff_minutes,
+                max_retry_attempts=max_retry_attempts,
+                auto_pause_enabled=auto_pause_enabled,
+                auto_pause_window_hours=auto_pause_window_hours,
+                auto_pause_error_rate_threshold=auto_pause_error_rate_threshold,
+                auto_pause_consecutive_failures=auto_pause_consecutive_failures,
+                auto_pause_minutes=auto_pause_minutes,
+                auto_resume_enabled=auto_resume_enabled,
+                recovery_probe_profile=recovery_probe_profile,
+                recovery_probe_payload=recovery_probe_payload,
+                recovery_probe_cooldown_minutes=recovery_probe_cooldown_minutes,
+                recovery_probe_max_per_hour=recovery_probe_max_per_hour,
+                paused_until=(datetime.now() + timedelta(minutes=pause_minutes)) if pause_minutes > 0 else None,
+                pause_reason=pause_reason.strip() or None,
+                digest_hour_local=digest_hour_local,
+                digest_limit=digest_limit,
+                digest_status_filter=digest_status_filter,
+                digest_publish_included=digest_publish_included,
                 notes=channel_notes or None,
                 active=channel_active,
             )
@@ -268,6 +849,15 @@ elif view == "Notification Center":
     with right:
         st.caption("Delivery history")
         channels = service.list_notification_channels()
+        health_window_hours = st.slider("Health window (hours)", min_value=1, max_value=168, value=24, step=1)
+        health = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_notification_channel_health(window_hours=health_window_hours)
+            ]
+        )
+        st.caption("Channel health")
+        st.dataframe(health, use_container_width=True)
         channel_filter = st.selectbox(
             "Channel filter",
             ["all"] + [item.id for item in channels],
@@ -287,6 +877,43 @@ elif view == "Notification Center":
             ]
         )
         st.dataframe(deliveries, use_container_width=True)
+        route_decision_filter = st.selectbox(
+            "Routing decision",
+            ["all", "delivered", "failed", "suppressed", "paused", "inactive", "rejected", "digest_deferred"],
+        )
+        routing_rows = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_notification_routing_audits(
+                    channel_id=None if channel_filter == "all" else channel_filter,
+                    event_type=None if event_type_filter == "all" else event_type_filter,
+                    decision=None if route_decision_filter == "all" else route_decision_filter,
+                    limit=200,
+                )
+            ]
+        )
+        st.caption("Routing audit")
+        st.dataframe(routing_rows, use_container_width=True)
+        summary_window = st.slider("Routing summary window (hours)", min_value=1, max_value=168, value=24, step=1)
+        routing_summary = pd.DataFrame(
+            service.get_notification_routing_summary(
+                channel_id=None if channel_filter == "all" else channel_filter,
+                event_type=None if event_type_filter == "all" else event_type_filter,
+                window_hours=summary_window,
+            )
+        )
+        st.caption("Routing summary")
+        st.dataframe(routing_summary, use_container_width=True)
+        export_format = st.selectbox("Routing export format", ["csv", "json"])
+        if st.button("Export routing audit"):
+            result = service.export_notification_routing_audits(
+                format=export_format,
+                channel_id=None if channel_filter == "all" else channel_filter,
+                event_type=None if event_type_filter == "all" else event_type_filter,
+                decision=None if route_decision_filter == "all" else route_decision_filter,
+                limit=5000,
+            )
+            st.success(f"Exported {result['count']} rows to {result['path']}")
         if channels:
             test_channel_id = st.selectbox(
                 "Send test notification",
@@ -298,6 +925,55 @@ elif view == "Notification Center":
             if st.button("Send test notification"):
                 delivery = service.send_test_notification(test_channel_id, subject=test_subject or None)
                 st.success(f"Sent test notification via {delivery.channel_name}")
+            pause_channel_id = st.selectbox(
+                "Pause or resume channel",
+                [item.id for item in channels],
+                key="pause_channel_id",
+                format_func=lambda x: next(item.name for item in channels if item.id == x),
+            )
+            pause_minutes_action = st.slider("Pause duration (minutes)", min_value=5, max_value=1440, value=60, step=5)
+            pause_reason_action = st.text_input("Pause reason (action)", value="", key="pause_reason_action")
+            pause_col, resume_col = st.columns(2)
+            with pause_col:
+                if st.button("Pause channel"):
+                    channel = service.pause_notification_channel(
+                        pause_channel_id,
+                        minutes=pause_minutes_action,
+                        reason=pause_reason_action.strip() or None,
+                    )
+                    st.success(f"Paused {channel.name} until {channel.paused_until}")
+            with resume_col:
+                if st.button("Resume channel"):
+                    channel = service.resume_notification_channel(pause_channel_id)
+                    st.success(f"Resumed {channel.name}")
+            if st.button("Run recovery checks"):
+                recoveries = service.run_notification_channel_recovery()
+                st.success(f"Recovery checks completed: {len(recoveries)} channel action(s)")
+            digest_channel_options = [item.id for item in channels if "alert_event" in item.event_types]
+            if digest_channel_options:
+                digest_channel_id = st.selectbox(
+                    "Send digest",
+                    digest_channel_options,
+                    key="digest_notification_channel",
+                    format_func=lambda x: next(item.name for item in channels if item.id == x),
+                )
+                digest_status = st.selectbox("Digest event status", ["new", "published", "dismissed"])
+                digest_limit = st.slider("Digest rows", min_value=1, max_value=50, value=10, step=1)
+                publish_digest_events = st.checkbox("Mark digest events published", value=False)
+                if st.button("Send alert digest"):
+                    try:
+                        digest = service.send_notification_digest(
+                            digest_channel_id,
+                            status=digest_status,
+                            limit=digest_limit,
+                            publish_included=publish_digest_events,
+                        )
+                        st.success(f"Sent digest {digest.id} with {digest.event_count} event(s)")
+                    except ValueError as exc:
+                        st.error(str(exc))
+                if st.button("Run due digests"):
+                    completed = service.run_due_notification_digests()
+                    st.success(f"Ran {len(completed)} due digest channel(s)")
         delivery_rows = service.list_notification_deliveries(
             channel_id=None if channel_filter == "all" else channel_filter,
             event_type=None if event_type_filter == "all" else event_type_filter,
@@ -307,8 +983,78 @@ elif view == "Notification Center":
         if delivery_rows:
             retry_delivery_id = st.selectbox("Retry delivery", [item.id for item in delivery_rows])
             if st.button("Retry selected delivery"):
-                delivery = service.retry_notification_delivery(retry_delivery_id)
-                st.success(f"Retried delivery {delivery.id} via {delivery.channel_name}")
+                try:
+                    delivery = service.retry_notification_delivery(retry_delivery_id)
+                    st.success(f"Retried delivery {delivery.id} via {delivery.channel_name}")
+                except ValueError as exc:
+                    st.error(str(exc))
+        digests = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_notification_digests(
+                    channel_id=None if channel_filter == "all" else channel_filter,
+                    limit=50,
+                )
+            ]
+        )
+        st.caption("Digest history")
+        st.dataframe(digests, use_container_width=True)
+
+elif view == "Ops Incidents":
+    st.subheader("Ops Incidents")
+    summary = service.get_ops_incident_summary()
+    metric_total, metric_open, metric_ack, metric_overdue = st.columns(4)
+    metric_total.metric("Total", summary.get("total", 0))
+    metric_open.metric("Open", summary.get("open", 0))
+    metric_ack.metric("Ack", summary.get("ack", 0))
+    metric_overdue.metric("Overdue Active", summary.get("overdue_active", 0))
+
+    all_incidents = service.list_ops_incidents(limit=500)
+    source_options = ["all"] + sorted({item.source_channel_id for item in all_incidents})
+    status_filter = st.selectbox("Incident status", ["all", "open", "ack", "resolved"])
+    source_filter = st.selectbox("Source channel", source_options)
+    overdue_only = st.checkbox("Overdue only", value=False)
+    incidents = service.list_ops_incidents(
+        status=None if status_filter == "all" else status_filter,
+        source_channel_id=None if source_filter == "all" else source_filter,
+        overdue_only=overdue_only,
+        limit=200,
+    )
+    incident_frame = pd.DataFrame([item.model_dump(mode="json") for item in incidents])
+    st.dataframe(incident_frame, use_container_width=True)
+    if incidents:
+        selected_incident = st.selectbox(
+            "Incident",
+            [item.id for item in incidents],
+            format_func=lambda x: next(
+                f"{item.source_channel_name} ({item.status}, {item.priority})"
+                for item in incidents
+                if item.id == x
+            ),
+        )
+        selected = next(item for item in incidents if item.id == selected_incident)
+        next_status = st.selectbox("Set status", ["open", "ack", "resolved"], index=["open", "ack", "resolved"].index(selected.status))
+        owner_value = st.text_input("Owner", value=selected.owner or "")
+        next_priority = st.selectbox(
+            "Priority",
+            ["low", "medium", "high"],
+            index=["low", "medium", "high"].index(selected.priority),
+        )
+        sla_minutes = st.number_input("SLA (minutes)", min_value=0, value=int(selected.sla_minutes), step=15)
+        incident_notes = st.text_input("Incident notes", value=selected.notes or "")
+        if st.button("Update incident"):
+            updated = service.update_ops_incident(
+                incident_id=selected_incident,
+                status=next_status,
+                owner=owner_value,
+                priority=next_priority,
+                sla_minutes=int(sla_minutes),
+                notes=incident_notes or None,
+            )
+            st.success(
+                f"Updated {updated.id}: status={updated.status}, owner={updated.owner or '-'}, "
+                f"priority={updated.priority}, due={updated.due_at}"
+            )
 
 elif view == "Screening Lab":
     st.subheader("Screening Lab")

@@ -17,6 +17,27 @@ OpenBB-first research platform scaffold for macro analysis, cross-asset monitori
 - Change monitor for ranked macro and cross-asset deltas, including report-section support
 - Alert rules and persisted alert events for thresholded change detection and alert-driven report sections
 - Persisted notification channels and delivery logs for alert events and report jobs, including test-send and retry flows
+- Channel-level routing policy for event types, minimum alert significance, and digest-vs-immediate alert delivery
+- Persisted notification digests for batched alert distribution
+- Backup-channel fallback for failed deliveries and severity-based escalation fan-out for alert events
+- Cooldown windows, duplicate suppression, and retry backoff/max-attempt governance for notification channels
+- Channel pause/resume controls with paused-until enforcement and per-channel delivery health summaries
+- Automatic channel auto-pause based on failure-rate and consecutive-failure thresholds
+- Persisted notification routing audit trail for delivered/failed/suppressed/paused/inactive decisions
+- Automatic recovery probes that can auto-resume previously auto-paused channels
+- Configurable recovery probe profiles (`minimal`, `standard`, `verbose`) with optional JSON payload overrides
+- Recovery probe throttling with cooldown and max-probes-per-hour safeguards
+- Policy-based ops escalation on repeated failed/suppressed/paused routing decisions
+- Ops incident lifecycle (`open`, `ack`, `resolved`) with API/UI triage workflows
+- Ops incident ownership, priority, SLA due-times, overdue filtering, and summary metrics
+- Persistent source-health registry with degraded/down fallback visibility and stale-source indicators
+- Source-health policy engine with per-source stale-threshold overrides, cooldowns, and channel-based alerting
+- Scheduled source-health policy execution in scheduler poll loop with persisted policy-run history
+- Source-health reason-level severity routing, per-reason subject templates, and escalation tiers by failure threshold
+- Policy scheduling windows (active weekdays/hours) with optional critical `down` bypass outside schedule
+- Per-policy timezone and holiday controls (built-in regional calendars + custom holiday date overrides)
+- Soft-delete policy lifecycle with archive/restore controls while preserving policy-run history
+- Policy version history with per-change snapshots/diffs for create, update, archive, restore, rollback, and version comparison actions, with saved filter presets, filtering, and JSON/CSV export in the UI
 - Tests for catalog shape, analytics, and API behavior
 
 ## Quick start

@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import subprocess
 import zipfile
+from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -22,7 +24,11 @@ from macro_platform.domain.models import (
     DashboardConfig,
     ModelPortfolio,
     NotificationChannel,
+    NotificationChannelHealth,
+    NotificationDigest,
     NotificationDelivery,
+    NotificationRoutingAudit,
+    OpsIncident,
     Observation,
     ObservationQuery,
     PortfolioSummaryRow,
@@ -37,6 +43,11 @@ from macro_platform.domain.models import (
     ScreenSpec,
     ScenarioDefinition,
     SeriesDefinition,
+    SourceHealth,
+    SourceHealthPolicy,
+    SourceHealthPolicyRun,
+    SourceHealthPolicyVersion,
+    SourceHealthPolicyVersionPreset,
     Watchlist,
 )
 from macro_platform.providers.adapters import (
@@ -57,7 +68,10 @@ from macro_platform.storage.repositories import (
     DashboardRepository,
     ModelPortfolioRepository,
     NotificationChannelRepository,
+    NotificationDigestRepository,
     NotificationDeliveryRepository,
+    NotificationRoutingAuditRepository,
+    OpsIncidentRepository,
     ObservationRepository,
     ReportJobRepository,
     ReportJobRunRepository,
@@ -66,6 +80,11 @@ from macro_platform.storage.repositories import (
     SavedScreenRepository,
     ScenarioRepository,
     SeriesDefinitionRepository,
+    SourceHealthRepository,
+    SourceHealthPolicyRepository,
+    SourceHealthPolicyRunRepository,
+    SourceHealthPolicyVersionRepository,
+    SourceHealthPolicyVersionPresetRepository,
     WatchlistRepository,
 )
 
@@ -89,6 +108,14 @@ class PlatformService:
         self.change_alert_event_repo = ChangeAlertEventRepository(self.database)
         self.notification_channel_repo = NotificationChannelRepository(self.database)
         self.notification_delivery_repo = NotificationDeliveryRepository(self.database)
+        self.notification_routing_audit_repo = NotificationRoutingAuditRepository(self.database)
+        self.ops_incident_repo = OpsIncidentRepository(self.database)
+        self.source_health_repo = SourceHealthRepository(self.database)
+        self.source_health_policy_repo = SourceHealthPolicyRepository(self.database)
+        self.source_health_policy_run_repo = SourceHealthPolicyRunRepository(self.database)
+        self.source_health_policy_version_repo = SourceHealthPolicyVersionRepository(self.database)
+        self.source_health_policy_version_preset_repo = SourceHealthPolicyVersionPresetRepository(self.database)
+        self.notification_digest_repo = NotificationDigestRepository(self.database)
         self.dashboard_repo = DashboardRepository(self.database)
         self.watchlist_repo = WatchlistRepository(self.database)
         self.saved_screen_repo = SavedScreenRepository(self.database)
@@ -131,6 +158,8 @@ class PlatformService:
     def query_observations(self, query: ObservationQuery) -> list[Observation]:
         definition = self.get_series(query.series_id)
         cached_rows = self.observation_repo.get_range(query.series_id, query.start_date, query.end_date)
+        source_id = f"macro:{definition.source}"
+        now = datetime.now()
         try:
             if definition.source == "fred":
                 rows = self.fred.fetch_observations(definition, query.start_date, query.end_date)
@@ -142,8 +171,31 @@ class PlatformService:
                 rows = self.world_bank.fetch_observations(definition, query.start_date, query.end_date)
             else:
                 rows = self.demo_macro.fetch_observations(definition, query.start_date, query.end_date)
+            self._record_source_health(
+                source_id=source_id,
+                source_kind="macro",
+                provider=definition.source,
+                status="healthy",
+                last_checked_at=now,
+                last_success_at=now,
+                fallback_used=False,
+                notes=f"series_id={query.series_id}",
+            )
         except Exception:
             rows = cached_rows or self.demo_macro.fetch_observations(definition, query.start_date, query.end_date)
+            degraded_status = "degraded" if rows else "down"
+            self._record_source_health(
+                source_id=source_id,
+                source_kind="macro",
+                provider=definition.source,
+                status=degraded_status,
+                last_checked_at=now,
+                last_success_at=now if rows else None,
+                last_failure_at=now,
+                fallback_used=True,
+                error_message=f"{definition.source} fetch failed for {query.series_id}",
+                notes="served from cache_or_demo_fallback",
+            )
 
         frame = pd.DataFrame([row.model_dump(mode="json") for row in rows])
         if not frame.empty:
@@ -161,20 +213,63 @@ class PlatformService:
         asset_class = self.market_universe.get(ticker, "unknown")
         start_date = start_date or (date.today() - timedelta(days=365))
         end_date = end_date or date.today()
+        now = datetime.now()
         cached_rows = self.asset_price_repo.get_range(ticker, start_date, end_date)
         if settings.use_openbb_market_provider:
             try:
                 provider = OpenBBMarketProvider()
                 rows = provider.fetch_prices(ticker, asset_class, start_date, end_date)
                 self.asset_price_repo.replace_range(ticker, rows)
+                self._record_source_health(
+                    source_id="market:prices",
+                    source_kind="market",
+                    provider="openbb",
+                    status="healthy",
+                    last_checked_at=now,
+                    last_success_at=now,
+                    fallback_used=False,
+                    notes=f"ticker={ticker}",
+                )
                 return rows
             except Exception:
-                pass
+                self._record_source_health(
+                    source_id="market:prices",
+                    source_kind="market",
+                    provider="openbb",
+                    status="degraded",
+                    last_checked_at=now,
+                    last_failure_at=now,
+                    fallback_used=True,
+                    error_message=f"openbb fetch failed for {ticker}",
+                    notes="falling back to demo_or_cache",
+                )
         try:
             rows = self.demo_market.fetch_prices(ticker, asset_class, start_date, end_date)
             self.asset_price_repo.replace_range(ticker, rows)
+            self._record_source_health(
+                source_id="market:prices",
+                source_kind="market",
+                provider="demo",
+                status="degraded" if settings.use_openbb_market_provider else "healthy",
+                last_checked_at=now,
+                last_success_at=now,
+                fallback_used=settings.use_openbb_market_provider,
+                notes=f"ticker={ticker}",
+            )
             return rows
         except Exception:
+            self._record_source_health(
+                source_id="market:prices",
+                source_kind="market",
+                provider="cache",
+                status="degraded" if cached_rows else "down",
+                last_checked_at=now,
+                last_success_at=now if cached_rows else None,
+                last_failure_at=now,
+                fallback_used=True,
+                error_message=f"demo provider failed for {ticker}",
+                notes="served from cached prices" if cached_rows else "no fallback available",
+            )
             return cached_rows
 
     def get_cross_asset_monitor(self) -> list[dict[str, float | str]]:
@@ -332,6 +427,365 @@ class PlatformService:
             )
         return sorted(rows, key=lambda item: (item.freshness_status, item.country, item.title))
 
+    def list_source_health(
+        self,
+        source_kind: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+    ) -> list[SourceHealth]:
+        rows = self.source_health_repo.list_saved(source_kind=source_kind, status=status, limit=limit)
+        now = datetime.now()
+        updated: list[SourceHealth] = []
+        for item in rows:
+            if _source_health_is_stale(item, now=now):
+                item.is_stale = True
+                if item.status == "healthy":
+                    item.status = "degraded"
+            else:
+                item.is_stale = False
+            updated.append(item)
+        return updated
+
+    def get_source_health_summary(self) -> dict[str, int]:
+        rows = self.list_source_health(limit=2000)
+        return {
+            "total": len(rows),
+            "healthy": sum(1 for item in rows if item.status == "healthy"),
+            "degraded": sum(1 for item in rows if item.status == "degraded"),
+            "down": sum(1 for item in rows if item.status == "down"),
+            "unknown": sum(1 for item in rows if item.status == "unknown"),
+            "stale": sum(1 for item in rows if item.is_stale),
+        }
+
+    def list_source_health_policies(
+        self,
+        active_only: bool = False,
+        include_archived: bool = False,
+        limit: int = 200,
+    ) -> list[SourceHealthPolicy]:
+        rows = self.source_health_policy_repo.list_saved(active_only=active_only, limit=limit)
+        if not include_archived:
+            rows = [item for item in rows if item.archived_at is None]
+        return rows
+
+    def get_source_health_policy(self, policy_id: str) -> SourceHealthPolicy:
+        policy = self.source_health_policy_repo.get(policy_id)
+        if policy is None:
+            raise KeyError(policy_id)
+        return policy
+
+    def save_source_health_policy(self, policy: SourceHealthPolicy) -> SourceHealthPolicy:
+        existing_policy = self.source_health_policy_repo.get(policy.id)
+        self._validate_source_health_policy(policy)
+        self._verify_source_health_policy_channels(policy)
+        self._apply_source_health_policy_threshold(policy)
+        saved = self.source_health_policy_repo.save(policy)
+        self._record_source_health_policy_version(
+            policy=saved,
+            action="create" if existing_policy is None else "update",
+            previous=existing_policy,
+        )
+        return saved
+
+    def archive_source_health_policy(self, policy_id: str, reason: str | None = None) -> SourceHealthPolicy:
+        policy = self.get_source_health_policy(policy_id)
+        previous = policy.model_copy(deep=True)
+        policy.active = False
+        policy.archived_at = datetime.now()
+        policy.archived_reason = reason
+        saved = self.source_health_policy_repo.save(policy)
+        self._record_source_health_policy_version(policy=saved, action="archive", previous=previous)
+        return saved
+
+    def restore_source_health_policy(self, policy_id: str) -> SourceHealthPolicy:
+        policy = self.get_source_health_policy(policy_id)
+        previous = policy.model_copy(deep=True)
+        policy.archived_at = None
+        policy.archived_reason = None
+        policy.active = True
+        saved = self.source_health_policy_repo.save(policy)
+        self._record_source_health_policy_version(policy=saved, action="restore", previous=previous)
+        return saved
+
+    def rollback_source_health_policy_version(self, version_id: str) -> SourceHealthPolicy:
+        version = self.get_source_health_policy_version(version_id)
+        current_policy = self.get_source_health_policy(version.policy_id)
+        restored_snapshot = {**version.snapshot, "id": version.policy_id}
+        restored_policy = SourceHealthPolicy.model_validate(restored_snapshot)
+        self._validate_source_health_policy(restored_policy)
+        self._verify_source_health_policy_channels(restored_policy)
+        self._apply_source_health_policy_threshold(restored_policy)
+        saved = self.source_health_policy_repo.save(restored_policy)
+        self._record_source_health_policy_version(policy=saved, action="rollback", previous=current_policy)
+        return saved
+
+    def list_source_health_policy_runs(self, trigger: str | None = None, limit: int = 100) -> list[SourceHealthPolicyRun]:
+        return self.source_health_policy_run_repo.list_saved(trigger=trigger, limit=limit)
+
+    def get_source_health_policy_run(self, run_id: str) -> SourceHealthPolicyRun:
+        run = self.source_health_policy_run_repo.get(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        return run
+
+    def list_source_health_policy_versions(
+        self,
+        policy_id: str,
+        limit: int = 50,
+        action: str | None = None,
+        query: str | None = None,
+    ) -> list[SourceHealthPolicyVersion]:
+        self.get_source_health_policy(policy_id)
+        rows = self.source_health_policy_version_repo.list_saved(policy_id=policy_id, limit=max(limit * 3, limit))
+        if action:
+            rows = [row for row in rows if row.action == action]
+        if query:
+            needle = query.strip().lower()
+            if needle:
+                rows = [
+                    row
+                    for row in rows
+                    if needle in row.summary.lower()
+                    or needle in row.action.lower()
+                    or any(needle in field.lower() for field in row.changed_fields)
+                ]
+        return rows[:limit]
+
+    def list_source_health_policy_version_presets(
+        self,
+        policy_id: str,
+        limit: int = 50,
+    ) -> list[SourceHealthPolicyVersionPreset]:
+        self.get_source_health_policy(policy_id)
+        return self.source_health_policy_version_preset_repo.list_saved(policy_id=policy_id, limit=limit)
+
+    def get_source_health_policy_version_preset(self, preset_id: str) -> SourceHealthPolicyVersionPreset:
+        preset = self.source_health_policy_version_preset_repo.get(preset_id)
+        if preset is None:
+            raise KeyError(preset_id)
+        return preset
+
+    def save_source_health_policy_version_preset(
+        self,
+        preset: SourceHealthPolicyVersionPreset,
+    ) -> SourceHealthPolicyVersionPreset:
+        self.get_source_health_policy(preset.policy_id)
+        if preset.limit < 1:
+            raise ValueError("limit must be at least 1.")
+        if preset.action_filter is not None and preset.action_filter not in {"create", "update", "archive", "restore", "rollback"}:
+            raise ValueError("action_filter must be one of: create, update, archive, restore, rollback.")
+        if preset.query is not None:
+            preset.query = preset.query.strip() or None
+        preset.name = preset.name.strip()
+        if not preset.name:
+            raise ValueError("name must be non-empty.")
+        return self.source_health_policy_version_preset_repo.save(preset)
+
+    def get_source_health_policy_version(self, version_id: str) -> SourceHealthPolicyVersion:
+        version = self.source_health_policy_version_repo.get(version_id)
+        if version is None:
+            raise KeyError(version_id)
+        return version
+
+    def compare_source_health_policy_versions(
+        self,
+        left_version_id: str,
+        right_version_id: str,
+    ) -> dict[str, object]:
+        left_version = self.get_source_health_policy_version(left_version_id)
+        right_version = self.get_source_health_policy_version(right_version_id)
+        if left_version.policy_id != right_version.policy_id:
+            raise ValueError("Version comparison requires both versions to belong to the same policy.")
+        left_snapshot = left_version.snapshot
+        right_snapshot = right_version.snapshot
+        changed_fields = sorted(set(left_snapshot.keys()) | set(right_snapshot.keys()))
+        diffs: list[dict[str, object]] = []
+        for field in changed_fields:
+            left_value = left_snapshot.get(field)
+            right_value = right_snapshot.get(field)
+            if left_value != right_value:
+                diffs.append(
+                    {
+                        "field": field,
+                        "left_value": left_value,
+                        "right_value": right_value,
+                    }
+                )
+        return {
+            "policy_id": left_version.policy_id,
+            "left_version_id": left_version.id,
+            "left_version_number": left_version.version_number,
+            "left_action": left_version.action,
+            "right_version_id": right_version.id,
+            "right_version_number": right_version.version_number,
+            "right_action": right_version.action,
+            "changed_fields": [item["field"] for item in diffs],
+            "diffs": diffs,
+        }
+
+    def set_source_stale_threshold(self, source_id: str, minutes: int) -> SourceHealth:
+        if minutes < 1:
+            raise ValueError("minutes must be at least 1.")
+        source = self.source_health_repo.get(source_id)
+        now = datetime.now()
+        if source is None:
+            source_kind, provider = _parse_source_id(source_id)
+            source = SourceHealth(
+                id=source_id,
+                source_kind=source_kind,
+                provider=provider,
+                status="unknown",
+                last_checked_at=now,
+            )
+        source.stale_threshold_minutes = minutes
+        source.is_stale = _source_health_is_stale(source, now=now)
+        return self.source_health_repo.save(source)
+
+    def run_source_health_policies(
+        self,
+        now: datetime | None = None,
+        trigger: str = "manual",
+    ) -> list[dict[str, object]]:
+        started_at = now or datetime.now()
+        sources = self.list_source_health(limit=5000)
+        policies = self.list_source_health_policies(active_only=True, limit=500)
+        actions: list[dict[str, object]] = []
+        for policy in policies:
+            if not policy.notification_channel_ids:
+                continue
+            if policy.last_triggered_at and policy.cooldown_minutes > 0:
+                if policy.last_triggered_at > (started_at - timedelta(minutes=policy.cooldown_minutes)):
+                    actions.append(
+                        {
+                            "policy_id": policy.id,
+                            "status": "skipped",
+                            "reason": "cooldown_active",
+                        }
+                    )
+                    continue
+            policy_triggered = False
+            for source in sources:
+                if policy.source_kind and source.source_kind != policy.source_kind:
+                    continue
+                if policy.source_id and source.id != policy.source_id:
+                    continue
+                reasons: list[str] = []
+                if policy.trigger_on_down and source.status == "down":
+                    reasons.append("down")
+                if policy.trigger_on_degraded and source.status == "degraded":
+                    reasons.append("degraded")
+                if policy.trigger_on_stale and source.is_stale:
+                    reasons.append("stale")
+                if source.consecutive_failures < policy.min_consecutive_failures:
+                    continue
+                if not reasons:
+                    continue
+                for reason in reasons:
+                    if not _source_policy_reason_in_schedule(
+                        policy=policy,
+                        reason=reason,
+                        check_time=started_at,
+                    ):
+                        actions.append(
+                            {
+                                "policy_id": policy.id,
+                                "source_id": source.id,
+                                "status": "skipped",
+                                "reason": "outside_policy_window",
+                                "reason_type": reason,
+                            }
+                        )
+                        continue
+                    severity = policy.reason_severity.get(reason) or _source_reason_default_severity(reason)
+                    subject_template = policy.reason_subject_templates.get(reason)
+                    subject = (
+                        _render_source_health_subject_template(
+                            subject_template,
+                            source_id=source.id,
+                            source_kind=source.source_kind,
+                            provider=source.provider,
+                            reason=reason,
+                            status=source.status,
+                            severity=severity,
+                        )
+                        if subject_template
+                        else f"Source Health Alert [{severity.upper()}]: {source.id} ({reason})"
+                    )
+                    channel_ids = list(policy.reason_channel_overrides.get(reason, [])) or list(policy.notification_channel_ids)
+                    escalated = source.consecutive_failures >= policy.escalation_failure_threshold
+                    if escalated:
+                        channel_ids = channel_ids + policy.escalation_channel_ids
+                    seen_channels: set[str] = set()
+                    deduped_channels: list[str] = []
+                    for channel_id in channel_ids:
+                        if channel_id in seen_channels:
+                            continue
+                        seen_channels.add(channel_id)
+                        deduped_channels.append(channel_id)
+                    related_id = f"source-health-{policy.id}-{source.id}-{reason}"
+                    payload = {
+                        "source_health_alert": True,
+                        "policy_id": policy.id,
+                        "policy_name": policy.name,
+                        "source_id": source.id,
+                        "source_kind": source.source_kind,
+                        "provider": source.provider,
+                        "status": source.status,
+                        "is_stale": source.is_stale,
+                        "consecutive_failures": source.consecutive_failures,
+                        "reason": reason,
+                        "severity": severity,
+                        "escalated": escalated,
+                        "last_checked_at": source.last_checked_at.isoformat(),
+                        "last_success_at": source.last_success_at.isoformat() if source.last_success_at else None,
+                        "last_failure_at": source.last_failure_at.isoformat() if source.last_failure_at else None,
+                        "last_error": source.last_error,
+                    }
+                    delivered = 0
+                    for channel_id in deduped_channels:
+                        delivery = self._send_governed_notification(
+                            channel_id=channel_id,
+                            event_type="manual",
+                            related_id=related_id,
+                            subject=subject,
+                            payload=payload,
+                            apply_suppression=True,
+                            apply_followups=False,
+                        )
+                        if delivery is not None:
+                            delivered += 1
+                    policy_triggered = True
+                    actions.append(
+                        {
+                            "policy_id": policy.id,
+                            "source_id": source.id,
+                            "status": "triggered",
+                            "reason": reason,
+                            "severity": severity,
+                            "escalated": escalated,
+                            "channels": deduped_channels,
+                            "deliveries": delivered,
+                        }
+                    )
+            if policy_triggered:
+                policy.last_triggered_at = started_at
+                self.source_health_policy_repo.save(policy)
+        finished_at = datetime.now()
+        run_trigger = trigger if trigger in {"manual", "worker"} else "manual"
+        run = SourceHealthPolicyRun(
+            id=f"source-health-policy-run-{uuid4().hex[:10]}",
+            trigger=run_trigger,
+            started_at=started_at,
+            finished_at=finished_at,
+            attempted_policies=len(policies),
+            triggered_actions=sum(1 for item in actions if item.get("status") == "triggered"),
+            skipped_actions=sum(1 for item in actions if item.get("status") == "skipped"),
+            failed_actions=sum(1 for item in actions if item.get("status") == "failed"),
+            actions=actions,
+        )
+        self.source_health_policy_run_repo.save(run)
+        return actions
+
     def get_change_monitor(
         self,
         country: str | None = None,
@@ -427,7 +881,62 @@ class PlatformService:
         return channel
 
     def save_notification_channel(self, channel: NotificationChannel) -> NotificationChannel:
+        referenced_channels = set(
+            channel.fallback_channel_ids
+            + channel.escalation_channel_ids
+            + channel.ops_escalation_channel_ids
+        )
+        if channel.id in referenced_channels:
+            raise ValueError("Notification channel cannot reference itself as a fallback or escalation target.")
+        for referenced_channel_id in referenced_channels:
+            self.get_notification_channel(referenced_channel_id)
+        if channel.auto_pause_window_hours < 1:
+            raise ValueError("auto_pause_window_hours must be at least 1.")
+        if channel.auto_pause_error_rate_threshold < 0 or channel.auto_pause_error_rate_threshold > 1:
+            raise ValueError("auto_pause_error_rate_threshold must be between 0 and 1.")
+        if channel.auto_pause_consecutive_failures < 1:
+            raise ValueError("auto_pause_consecutive_failures must be at least 1.")
+        if channel.auto_pause_minutes < 1:
+            raise ValueError("auto_pause_minutes must be at least 1.")
+        if channel.ops_escalation_window_hours < 1:
+            raise ValueError("ops_escalation_window_hours must be at least 1.")
+        if channel.ops_escalation_threshold < 1:
+            raise ValueError("ops_escalation_threshold must be at least 1.")
+        if channel.ops_escalation_cooldown_minutes < 0:
+            raise ValueError("ops_escalation_cooldown_minutes must be at least 0.")
+        if channel.recovery_probe_cooldown_minutes < 0:
+            raise ValueError("recovery_probe_cooldown_minutes must be at least 0.")
+        if channel.recovery_probe_max_per_hour < 1:
+            raise ValueError("recovery_probe_max_per_hour must be at least 1.")
+        if channel.delivery_mode == "digest" and "alert_event" in channel.event_types and channel.active:
+            if channel.next_digest_at is None:
+                channel.next_digest_at = _compute_next_run_at(
+                    cadence="daily",
+                    run_hour_local=channel.digest_hour_local,
+                    run_day_of_week=None,
+                    base_time=datetime.now(),
+                )
+        else:
+            channel.last_digest_at = None if channel.delivery_mode != "digest" else channel.last_digest_at
+            channel.next_digest_at = None
         return self.notification_channel_repo.save(channel)
+
+    def pause_notification_channel(
+        self,
+        channel_id: str,
+        minutes: int,
+        reason: str | None = None,
+    ) -> NotificationChannel:
+        channel = self.get_notification_channel(channel_id)
+        channel.paused_until = datetime.now() + timedelta(minutes=max(minutes, 1))
+        channel.pause_reason = reason or channel.pause_reason
+        return self.save_notification_channel(channel)
+
+    def resume_notification_channel(self, channel_id: str) -> NotificationChannel:
+        channel = self.get_notification_channel(channel_id)
+        channel.paused_until = None
+        channel.pause_reason = None
+        return self.save_notification_channel(channel)
 
     def list_notification_deliveries(
         self,
@@ -443,6 +952,367 @@ class PlatformService:
             limit=limit,
         )
 
+    def list_notification_channel_health(
+        self,
+        channel_id: str | None = None,
+        window_hours: int = 24,
+    ) -> list[NotificationChannelHealth]:
+        now = datetime.now()
+        window_hours = max(1, int(window_hours))
+        cutoff = now - timedelta(hours=window_hours)
+        channels = self.list_notification_channels(active_only=False)
+        if channel_id:
+            channels = [channel for channel in channels if channel.id == channel_id]
+        rows: list[NotificationChannelHealth] = []
+        for channel in channels:
+            deliveries = self.notification_delivery_repo.list_saved(channel_id=channel.id, limit=1000)
+            recent = [item for item in deliveries if item.triggered_at >= cutoff]
+            successes = [item for item in recent if item.status == "success"]
+            failures = [item for item in recent if item.status == "failed"]
+            total = len(recent)
+            success_count = len(successes)
+            failed_count = len(failures)
+            success_rate = round(success_count / total, 4) if total else 1.0
+            error_rate = round(failed_count / total, 4) if total else 0.0
+            consecutive_failures = 0
+            for item in deliveries:
+                if item.status == "failed":
+                    consecutive_failures += 1
+                    continue
+                break
+            rows.append(
+                NotificationChannelHealth(
+                    channel_id=channel.id,
+                    channel_name=channel.name,
+                    kind=channel.kind,
+                    active=channel.active,
+                    is_paused=_channel_is_paused(channel, now=now),
+                    paused_until=channel.paused_until,
+                    pause_reason=channel.pause_reason,
+                    auto_pause_enabled=channel.auto_pause_enabled,
+                    auto_pause_window_hours=channel.auto_pause_window_hours,
+                    auto_pause_error_rate_threshold=channel.auto_pause_error_rate_threshold,
+                    auto_pause_consecutive_failures=channel.auto_pause_consecutive_failures,
+                    auto_pause_minutes=channel.auto_pause_minutes,
+                    auto_resume_enabled=channel.auto_resume_enabled,
+                    ops_escalation_enabled=channel.ops_escalation_enabled,
+                    ops_escalation_window_hours=channel.ops_escalation_window_hours,
+                    ops_escalation_threshold=channel.ops_escalation_threshold,
+                    ops_escalation_cooldown_minutes=channel.ops_escalation_cooldown_minutes,
+                    recovery_probe_profile=channel.recovery_probe_profile,
+                    recovery_probe_cooldown_minutes=channel.recovery_probe_cooldown_minutes,
+                    recovery_probe_max_per_hour=channel.recovery_probe_max_per_hour,
+                    last_auto_paused_at=channel.last_auto_paused_at,
+                    last_auto_resumed_at=channel.last_auto_resumed_at,
+                    last_recovery_probe_at=channel.last_recovery_probe_at,
+                    last_ops_escalated_at=channel.last_ops_escalated_at,
+                    window_hours=window_hours,
+                    total_attempts=total,
+                    success_count=success_count,
+                    failed_count=failed_count,
+                    success_rate=success_rate,
+                    error_rate=error_rate,
+                    consecutive_failures=consecutive_failures,
+                    last_delivery_at=deliveries[0].triggered_at if deliveries else None,
+                    last_success_at=successes[0].triggered_at if successes else None,
+                    last_failure_at=failures[0].triggered_at if failures else None,
+                    last_error_message=failures[0].error_message if failures else None,
+                )
+            )
+        return sorted(
+            rows,
+            key=lambda item: (-item.error_rate, -item.failed_count, item.channel_name),
+        )
+
+    def run_notification_channel_recovery(self, now: datetime | None = None) -> list[dict[str, object]]:
+        now = now or datetime.now()
+        results: list[dict[str, object]] = []
+        for channel in self.list_notification_channels(active_only=True):
+            if not channel.auto_resume_enabled:
+                continue
+            if channel.last_auto_paused_at is None:
+                continue
+            if channel.paused_until is None or channel.paused_until > now:
+                continue
+            recovery_block_reason = self._recovery_probe_block_reason(channel, now=now)
+            if recovery_block_reason:
+                self._record_notification_routing_audit(
+                    channel=channel,
+                    event_type="manual",
+                    related_id=f"auto-resume-probe-skip-{uuid4().hex[:8]}",
+                    decision="suppressed",
+                    reason=recovery_block_reason,
+                    payload={"auto_resume_probe": True, "probe_profile": channel.recovery_probe_profile},
+                )
+                results.append(
+                    {
+                        "channel_id": channel.id,
+                        "status": "skipped",
+                        "reason": recovery_block_reason,
+                        "probe_profile": channel.recovery_probe_profile,
+                    }
+                )
+                continue
+            probe = self.dispatch_notification(
+                channel_id=channel.id,
+                event_type="manual",
+                related_id=f"auto-resume-probe-{uuid4().hex[:8]}",
+                subject=f"Auto-resume probe ({channel.recovery_probe_profile}): {channel.name}",
+                payload=self._build_recovery_probe_payload(channel),
+            )
+            if probe.status == "success":
+                channel.paused_until = None
+                channel.pause_reason = None
+                channel.last_auto_resumed_at = now
+                channel.last_recovery_probe_at = probe.triggered_at
+                self.save_notification_channel(channel)
+                self._record_notification_routing_audit(
+                    channel=channel,
+                    event_type="manual",
+                    related_id=probe.related_id,
+                    decision="delivered",
+                    reason="auto_resume_probe_success",
+                    payload={"delivery_id": probe.id},
+                )
+                results.append(
+                    {
+                        "channel_id": channel.id,
+                        "status": "resumed",
+                        "probe_delivery_id": probe.id,
+                        "probe_profile": channel.recovery_probe_profile,
+                    }
+                )
+            else:
+                channel.paused_until = now + timedelta(minutes=channel.auto_pause_minutes)
+                channel.pause_reason = (
+                    "Auto-resume probe failed. "
+                    f"Last error: {probe.error_message or 'unknown'}"
+                )
+                channel.last_recovery_probe_at = probe.triggered_at
+                self.save_notification_channel(channel)
+                self._record_notification_routing_audit(
+                    channel=channel,
+                    event_type="manual",
+                    related_id=probe.related_id,
+                    decision="failed",
+                    reason="auto_resume_probe_failed",
+                    payload={"delivery_id": probe.id, "error": probe.error_message},
+                )
+                results.append(
+                    {
+                        "channel_id": channel.id,
+                        "status": "probe_failed",
+                        "probe_delivery_id": probe.id,
+                        "probe_profile": channel.recovery_probe_profile,
+                    }
+                )
+        return results
+
+    def list_notification_digests(
+        self,
+        channel_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[NotificationDigest]:
+        return self.notification_digest_repo.list_saved(channel_id=channel_id, status=status, limit=limit)
+
+    def get_notification_digest(self, digest_id: str) -> NotificationDigest:
+        digest = self.notification_digest_repo.get(digest_id)
+        if digest is None:
+            raise KeyError(digest_id)
+        return digest
+
+    def list_notification_routing_audits(
+        self,
+        channel_id: str | None = None,
+        event_type: str | None = None,
+        decision: str | None = None,
+        limit: int = 200,
+    ) -> list[NotificationRoutingAudit]:
+        return self.notification_routing_audit_repo.list_saved(
+            channel_id=channel_id,
+            event_type=event_type,
+            decision=decision,
+            limit=limit,
+        )
+
+    def get_notification_routing_audit(self, audit_id: str) -> NotificationRoutingAudit:
+        audit = self.notification_routing_audit_repo.get(audit_id)
+        if audit is None:
+            raise KeyError(audit_id)
+        return audit
+
+    def list_ops_incidents(
+        self,
+        status: str | None = None,
+        source_channel_id: str | None = None,
+        overdue_only: bool = False,
+        limit: int = 200,
+    ) -> list[OpsIncident]:
+        rows = self.ops_incident_repo.list_saved(
+            status=status,
+            source_channel_id=source_channel_id,
+            limit=limit,
+        )
+        if overdue_only:
+            now = datetime.now()
+            rows = [item for item in rows if _incident_is_overdue(item, now=now)]
+        return rows
+
+    def get_ops_incident(self, incident_id: str) -> OpsIncident:
+        incident = self.ops_incident_repo.get(incident_id)
+        if incident is None:
+            raise KeyError(incident_id)
+        return incident
+
+    def update_ops_incident(
+        self,
+        incident_id: str,
+        status: str | None = None,
+        owner: str | None = None,
+        priority: str | None = None,
+        sla_minutes: int | None = None,
+        notes: str | None = None,
+    ) -> OpsIncident:
+        if status is not None and status not in {"open", "ack", "resolved"}:
+            raise ValueError("status must be one of: open, ack, resolved")
+        if priority is not None and priority not in {"low", "medium", "high"}:
+            raise ValueError("priority must be one of: low, medium, high")
+        if sla_minutes is not None and sla_minutes < 0:
+            raise ValueError("sla_minutes must be at least 0")
+        incident = self.get_ops_incident(incident_id)
+        now = datetime.now()
+        if status is not None:
+            incident.status = status
+            if status == "ack":
+                incident.acknowledged_at = now
+                incident.resolved_at = None
+            elif status == "resolved":
+                incident.resolved_at = now
+            elif status == "open":
+                incident.resolved_at = None
+        if owner is not None:
+            incident.owner = owner or None
+        if priority is not None:
+            incident.priority = priority
+        if sla_minutes is not None:
+            incident.sla_minutes = sla_minutes
+        incident.due_at = incident.opened_at + timedelta(minutes=incident.sla_minutes)
+        incident.updated_at = now
+        incident.notes = notes or incident.notes
+        return self.ops_incident_repo.save(incident)
+
+    def update_ops_incident_status(self, incident_id: str, status: str, notes: str | None = None) -> OpsIncident:
+        return self.update_ops_incident(incident_id=incident_id, status=status, notes=notes)
+
+    def get_ops_incident_summary(self) -> dict[str, int]:
+        rows = self.list_ops_incidents(limit=2000)
+        now = datetime.now()
+        open_count = sum(1 for item in rows if item.status == "open")
+        ack_count = sum(1 for item in rows if item.status == "ack")
+        resolved_count = sum(1 for item in rows if item.status == "resolved")
+        overdue_active = sum(1 for item in rows if _incident_is_overdue(item, now=now))
+        return {
+            "total": len(rows),
+            "open": open_count,
+            "ack": ack_count,
+            "resolved": resolved_count,
+            "overdue_active": overdue_active,
+        }
+
+    def get_notification_routing_summary(
+        self,
+        channel_id: str | None = None,
+        event_type: str | None = None,
+        window_hours: int = 24,
+    ) -> list[dict[str, object]]:
+        now = datetime.now()
+        since = now - timedelta(hours=max(1, int(window_hours)))
+        rows = self.list_notification_routing_audits(
+            channel_id=channel_id,
+            event_type=event_type,
+            limit=5000,
+        )
+        scoped = [item for item in rows if item.created_at >= since]
+        by_channel: dict[str, list[NotificationRoutingAudit]] = {}
+        for row in scoped:
+            by_channel.setdefault(row.channel_id, []).append(row)
+        summary: list[dict[str, object]] = []
+        for channel_key, items in by_channel.items():
+            decision_counts = Counter(item.decision for item in items)
+            top_reason = Counter((item.reason or "none") for item in items).most_common(1)[0][0]
+            summary.append(
+                {
+                    "channel_id": channel_key,
+                    "channel_name": items[0].channel_name,
+                    "window_hours": window_hours,
+                    "total": len(items),
+                    "delivered": decision_counts.get("delivered", 0),
+                    "failed": decision_counts.get("failed", 0),
+                    "suppressed": decision_counts.get("suppressed", 0),
+                    "paused": decision_counts.get("paused", 0),
+                    "inactive": decision_counts.get("inactive", 0),
+                    "rejected": decision_counts.get("rejected", 0),
+                    "digest_deferred": decision_counts.get("digest_deferred", 0),
+                    "top_reason": top_reason,
+                }
+            )
+        return sorted(summary, key=lambda row: (-(row["failed"] + row["suppressed"] + row["paused"]), -row["total"]))
+
+    def export_notification_routing_audits(
+        self,
+        format: str = "csv",
+        channel_id: str | None = None,
+        event_type: str | None = None,
+        decision: str | None = None,
+        limit: int = 5000,
+    ) -> dict[str, object]:
+        rows = self.list_notification_routing_audits(
+            channel_id=channel_id,
+            event_type=event_type,
+            decision=decision,
+            limit=limit,
+        )
+        export_dir = settings.notification_output_dir / "routing_exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filters = "_".join(
+            [
+                _slugify(channel_id) if channel_id else "all-channels",
+                _slugify(event_type) if event_type else "all-events",
+                _slugify(decision) if decision else "all-decisions",
+            ]
+        )
+        if format == "json":
+            output_path = export_dir / f"routing_audit_{stamp}_{filters}.json"
+            payload = [item.model_dump(mode="json") for item in rows]
+            output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        elif format == "csv":
+            output_path = export_dir / f"routing_audit_{stamp}_{filters}.csv"
+            frame = pd.DataFrame([item.model_dump(mode="json") for item in rows])
+            if frame.empty:
+                frame = pd.DataFrame(
+                    columns=[
+                        "id",
+                        "channel_id",
+                        "channel_name",
+                        "event_type",
+                        "related_id",
+                        "decision",
+                        "reason",
+                        "created_at",
+                        "payload",
+                    ]
+                )
+            frame.to_csv(output_path, index=False)
+        else:
+            raise ValueError("Unsupported format. Use 'csv' or 'json'.")
+        return {
+            "format": format,
+            "count": len(rows),
+            "path": str(output_path),
+        }
+
     def get_notification_delivery(self, delivery_id: str) -> NotificationDelivery:
         delivery = self.notification_delivery_repo.get(delivery_id)
         if delivery is None:
@@ -457,6 +1327,7 @@ class PlatformService:
         subject: str,
         payload: dict[str, object],
         attempt_count: int = 1,
+        fallback_from_channel_id: str | None = None,
     ) -> NotificationDelivery:
         channel = self.get_notification_channel(channel_id)
         triggered_at = datetime.now()
@@ -470,7 +1341,11 @@ class PlatformService:
             triggered_at=triggered_at,
             attempt_count=attempt_count,
             target=channel.target,
-            payload={"subject": subject, **payload},
+            payload={
+                "subject": subject,
+                **payload,
+                **({"fallback_from_channel_id": fallback_from_channel_id} if fallback_from_channel_id else {}),
+            },
         )
         try:
             if channel.kind in {"file", "email"}:
@@ -484,7 +1359,28 @@ class PlatformService:
         except Exception as exc:
             delivery.status = "failed"
             delivery.error_message = str(exc)
-        return self.notification_delivery_repo.save(delivery)
+        persisted = self.notification_delivery_repo.save(delivery)
+        self._maybe_auto_pause_channel(channel, persisted)
+        return persisted
+
+    def route_notification(
+        self,
+        channel_id: str,
+        event_type: str,
+        related_id: str,
+        subject: str,
+        payload: dict[str, object],
+    ) -> NotificationDelivery | None:
+        return self._send_governed_notification(
+            channel_id=channel_id,
+            event_type=event_type,
+            related_id=related_id,
+            subject=subject,
+            payload=payload,
+            attempt_count=1,
+            apply_suppression=True,
+            apply_followups=True,
+        )
 
     def send_test_notification(self, channel_id: str, subject: str | None = None) -> NotificationDelivery:
         channel = self.get_notification_channel(channel_id)
@@ -501,6 +1397,15 @@ class PlatformService:
 
     def retry_notification_delivery(self, delivery_id: str) -> NotificationDelivery:
         existing = self.get_notification_delivery(delivery_id)
+        channel = self.get_notification_channel(existing.channel_id)
+        if existing.attempt_count >= channel.max_retry_attempts:
+            raise ValueError(f"Maximum retry attempts reached for channel '{channel.name}'.")
+        if channel.retry_backoff_minutes > 0:
+            next_retry_at = existing.triggered_at + timedelta(minutes=channel.retry_backoff_minutes)
+            if next_retry_at > datetime.now():
+                raise ValueError(
+                    f"Retry backoff active for channel '{channel.name}' until {next_retry_at.isoformat()}."
+                )
         subject = str(existing.payload.get("subject", existing.channel_name))
         retry_payload = dict(existing.payload)
         retry_payload["retried_from_delivery_id"] = existing.id
@@ -512,6 +1417,119 @@ class PlatformService:
             payload=retry_payload,
             attempt_count=existing.attempt_count + 1,
         )
+
+    def send_notification_digest(
+        self,
+        channel_id: str,
+        status: str = "new",
+        limit: int = 25,
+        publish_included: bool = False,
+    ) -> NotificationDigest:
+        channel = self.get_notification_channel(channel_id)
+        if not channel.active:
+            raise ValueError(f"Notification channel '{channel.name}' is inactive.")
+        if _channel_is_paused(channel):
+            raise ValueError(f"Notification channel '{channel.name}' is paused.")
+        events = self._collect_digest_alert_events(channel, status=status, limit=limit)
+        digest = NotificationDigest(
+            id=f"digest-{uuid4().hex[:10]}",
+            channel_id=channel.id,
+            channel_name=channel.name,
+            status="success",
+            triggered_at=datetime.now(),
+            event_count=len(events),
+            source_event_ids=[event.id for event in events],
+            target=channel.target,
+            payload={
+                "subject": f"Alert Digest: {channel.name}",
+                "event_count": len(events),
+                "events": [
+                    {
+                        "event_id": event.id,
+                        "rule_name": event.rule_name,
+                        "key": event.signal.key,
+                        "title": event.signal.title,
+                        "significance": event.signal.significance,
+                        "direction": event.signal.direction,
+                        "absolute_change": event.signal.absolute_change,
+                        "percent_change": event.signal.percent_change,
+                        "observation_date": event.signal.observation_date,
+                    }
+                    for event in events
+                ],
+            },
+        )
+        try:
+            if channel.kind in {"file", "email"}:
+                output_path = self._write_notification_digest(channel, digest)
+                digest.output_path = str(output_path)
+            elif channel.kind in {"webhook", "slack"}:
+                response_code = self._post_notification(channel, digest.payload)
+                digest.response_code = response_code
+            else:
+                raise ValueError(f"Unsupported notification channel kind: {channel.kind}")
+            if publish_included:
+                for event in events:
+                    if event.status == "new":
+                        self.update_change_alert_event_status(event.id, "published")
+        except Exception as exc:
+            digest.status = "failed"
+            digest.error_message = str(exc)
+        persisted = self.notification_digest_repo.save(digest)
+        if persisted.status == "failed":
+            for fallback_channel_id in channel.fallback_channel_ids:
+                fallback_channel = self.get_notification_channel(fallback_channel_id)
+                if not _notification_channel_accepts(fallback_channel, "manual", digest.payload):
+                    continue
+                self.dispatch_notification(
+                    channel_id=fallback_channel_id,
+                    event_type="manual",
+                    related_id=digest.id,
+                    subject=f"Fallback Digest Delivery: {channel.name}",
+                    payload={
+                        "digest_id": digest.id,
+                        "source_channel_id": channel.id,
+                        "source_channel_name": channel.name,
+                        "digest_payload": digest.payload,
+                    },
+                    fallback_from_channel_id=channel.id,
+                )
+        return persisted
+
+    def run_due_notification_digests(self, now: datetime | None = None) -> list[NotificationDigest]:
+        now = now or datetime.now()
+        completed: list[NotificationDigest] = []
+        for channel in self.list_notification_channels(active_only=True):
+            if _channel_is_paused(channel, now=now):
+                continue
+            if channel.delivery_mode != "digest" or "alert_event" not in channel.event_types:
+                continue
+            if channel.next_digest_at is None:
+                channel.next_digest_at = _compute_next_run_at(
+                    cadence="daily",
+                    run_hour_local=channel.digest_hour_local,
+                    run_day_of_week=None,
+                    base_time=now,
+                )
+                self.notification_channel_repo.save(channel)
+                continue
+            if channel.next_digest_at <= now:
+                digest = self.send_notification_digest(
+                    channel_id=channel.id,
+                    status=channel.digest_status_filter,
+                    limit=channel.digest_limit,
+                    publish_included=channel.digest_publish_included,
+                )
+                channel.last_digest_at = digest.triggered_at
+                channel.next_digest_at = _compute_next_run_at(
+                    cadence="daily",
+                    run_hour_local=channel.digest_hour_local,
+                    run_day_of_week=None,
+                    base_time=digest.triggered_at,
+                )
+                self.notification_channel_repo.save(channel)
+                completed.append(digest)
+        return completed
 
     def run_change_alert_scan(self, rule_id: str | None = None) -> list[ChangeAlertEvent]:
         rules = [self.get_change_alert_rule(rule_id)] if rule_id else self.list_change_alert_rules()
@@ -544,7 +1562,7 @@ class PlatformService:
                 self.change_alert_event_repo.save(event)
                 created.append(event)
                 for channel_id in rule.notification_channel_ids:
-                    self.dispatch_notification(
+                    self.route_notification(
                         channel_id=channel_id,
                         event_type="alert_event",
                         related_id=event.id,
@@ -748,7 +1766,7 @@ class PlatformService:
             for export_format in job.export_formats:
                 snapshot = self.export_report_snapshot(snapshot.id, export_format)
             for channel_id in job.notification_channel_ids:
-                self.dispatch_notification(
+                self.route_notification(
                     channel_id=channel_id,
                     event_type="report_job",
                     related_id=job.id,
@@ -1084,6 +2102,566 @@ class PlatformService:
             output_path.write_text("\n".join(lines), encoding="utf-8")
         return output_path
 
+    def _write_notification_digest(self, channel: NotificationChannel, digest: NotificationDigest) -> Path:
+        channel_dir = settings.notification_output_dir / _slugify(channel.id)
+        channel_dir.mkdir(parents=True, exist_ok=True)
+        suffix = "json" if channel.kind == "file" else "eml"
+        output_path = channel_dir / f"{digest.id}.{suffix}"
+        if channel.kind == "file":
+            output_path.write_text(json.dumps(digest.model_dump(mode="json"), indent=2), encoding="utf-8")
+        else:
+            subject = str(digest.payload.get("subject", digest.channel_name))
+            lines = [
+                f"To: {channel.target}",
+                f"Subject: {subject}",
+                f"X-Channel-Id: {channel.id}",
+                f"X-Event-Count: {digest.event_count}",
+                "",
+                json.dumps(digest.payload, indent=2),
+            ]
+            output_path.write_text("\n".join(lines), encoding="utf-8")
+        return output_path
+
+    def _send_governed_notification(
+        self,
+        channel_id: str,
+        event_type: str,
+        related_id: str,
+        subject: str,
+        payload: dict[str, object],
+        attempt_count: int = 1,
+        fallback_from_channel_id: str | None = None,
+        apply_suppression: bool = True,
+        apply_followups: bool = False,
+    ) -> NotificationDelivery | None:
+        channel = self.get_notification_channel(channel_id)
+        if not channel.active:
+            self._record_notification_routing_audit(
+                channel=channel,
+                event_type=event_type,
+                related_id=related_id,
+                decision="inactive",
+                reason="channel_inactive",
+                payload=payload,
+            )
+            return None
+        if _channel_is_paused(channel):
+            self._record_notification_routing_audit(
+                channel=channel,
+                event_type=event_type,
+                related_id=related_id,
+                decision="paused",
+                reason=channel.pause_reason or "channel_paused",
+                payload=payload,
+            )
+            return None
+        accepts, reject_reason = _notification_channel_acceptance(channel, event_type, payload)
+        if not accepts:
+            self._record_notification_routing_audit(
+                channel=channel,
+                event_type=event_type,
+                related_id=related_id,
+                decision="rejected",
+                reason=reject_reason,
+                payload=payload,
+            )
+            return None
+        if channel.delivery_mode == "digest" and event_type == "alert_event":
+            self._record_notification_routing_audit(
+                channel=channel,
+                event_type=event_type,
+                related_id=related_id,
+                decision="digest_deferred",
+                reason="digest_mode",
+                payload=payload,
+            )
+            return None
+        suppression_reason = (
+            self._notification_suppression_reason(channel, event_type, related_id)
+            if apply_suppression
+            else None
+        )
+        if suppression_reason:
+            self._record_notification_routing_audit(
+                channel=channel,
+                event_type=event_type,
+                related_id=related_id,
+                decision="suppressed",
+                reason=suppression_reason,
+                payload=payload,
+            )
+            return None
+        delivery = self.dispatch_notification(
+            channel_id=channel_id,
+            event_type=event_type,
+            related_id=related_id,
+            subject=subject,
+            payload=payload,
+            attempt_count=attempt_count,
+            fallback_from_channel_id=fallback_from_channel_id,
+        )
+        self._record_notification_routing_audit(
+            channel=channel,
+            event_type=event_type,
+            related_id=related_id,
+            decision="delivered" if delivery.status == "success" else "failed",
+            reason=delivery.error_message,
+            payload={
+                **payload,
+                "delivery_id": delivery.id,
+                "delivery_status": delivery.status,
+            },
+        )
+        if apply_followups:
+            self._route_follow_up_channels(
+                primary_channel=channel,
+                primary_delivery=delivery,
+                event_type=event_type,
+                related_id=related_id,
+                subject=subject,
+                payload=payload,
+            )
+        return delivery
+
+    def _notification_suppression_reason(
+        self,
+        channel: NotificationChannel,
+        event_type: str,
+        related_id: str,
+    ) -> str | None:
+        now = datetime.now()
+        recent = self.notification_delivery_repo.list_for_related(
+            channel_id=channel.id,
+            event_type=event_type,
+            related_id=related_id,
+            limit=25,
+        )
+        if not recent:
+            return None
+        if channel.cooldown_minutes > 0:
+            cooldown_since = now - timedelta(minutes=channel.cooldown_minutes)
+            if any(item.triggered_at >= cooldown_since for item in recent):
+                return "cooldown_window"
+        if channel.duplicate_window_minutes > 0:
+            duplicate_since = now - timedelta(minutes=channel.duplicate_window_minutes)
+            if any(item.status == "success" and item.triggered_at >= duplicate_since for item in recent):
+                return "duplicate_window"
+        return None
+
+    def _maybe_auto_pause_channel(self, channel: NotificationChannel, delivery: NotificationDelivery) -> None:
+        if not channel.auto_pause_enabled:
+            return
+        if _channel_is_paused(channel):
+            return
+        if delivery.status != "failed":
+            return
+        now = datetime.now()
+        window_since = now - timedelta(hours=channel.auto_pause_window_hours)
+        rows = self.notification_delivery_repo.list_saved(channel_id=channel.id, limit=500)
+        recent = [item for item in rows if item.triggered_at >= window_since]
+        if not recent:
+            return
+        failed_count = sum(1 for item in recent if item.status == "failed")
+        error_rate = failed_count / len(recent)
+        consecutive_failures = 0
+        for item in rows:
+            if item.status == "failed":
+                consecutive_failures += 1
+                continue
+            break
+        should_pause = error_rate >= channel.auto_pause_error_rate_threshold
+        should_pause = should_pause or consecutive_failures >= channel.auto_pause_consecutive_failures
+        if not should_pause:
+            return
+        channel.paused_until = now + timedelta(minutes=channel.auto_pause_minutes)
+        if consecutive_failures >= channel.auto_pause_consecutive_failures:
+            channel.pause_reason = (
+                f"Auto-paused after {consecutive_failures} consecutive failures "
+                f"(threshold={channel.auto_pause_consecutive_failures})."
+            )
+        else:
+            error_pct = round(error_rate * 100, 2)
+            threshold_pct = round(channel.auto_pause_error_rate_threshold * 100, 2)
+            channel.pause_reason = (
+                f"Auto-paused due to {error_pct}% error rate over {channel.auto_pause_window_hours}h "
+                f"(threshold={threshold_pct}%)."
+            )
+        channel.last_auto_paused_at = now
+        self.notification_channel_repo.save(channel)
+
+    def _route_follow_up_channels(
+        self,
+        primary_channel: NotificationChannel,
+        primary_delivery: NotificationDelivery,
+        event_type: str,
+        related_id: str,
+        subject: str,
+        payload: dict[str, object],
+    ) -> None:
+        attempted = {primary_channel.id}
+        if primary_delivery.status == "failed":
+            for fallback_channel_id in primary_channel.fallback_channel_ids:
+                if fallback_channel_id in attempted:
+                    continue
+                attempted.add(fallback_channel_id)
+                self._send_governed_notification(
+                    channel_id=fallback_channel_id,
+                    event_type=event_type,
+                    related_id=related_id,
+                    subject=subject,
+                    payload=payload,
+                    fallback_from_channel_id=primary_channel.id,
+                    apply_suppression=True,
+                    apply_followups=False,
+                )
+        if event_type == "alert_event" and _payload_meets_escalation_threshold(primary_channel, payload):
+            for escalation_channel_id in primary_channel.escalation_channel_ids:
+                if escalation_channel_id in attempted:
+                    continue
+                attempted.add(escalation_channel_id)
+                self._send_governed_notification(
+                    channel_id=escalation_channel_id,
+                    event_type=event_type,
+                    related_id=related_id,
+                    subject=f"Escalated Alert: {subject}",
+                    payload={
+                        **payload,
+                        "escalated_from_channel_id": primary_channel.id,
+                    },
+                    apply_suppression=True,
+                    apply_followups=False,
+                )
+
+    def _record_notification_routing_audit(
+        self,
+        channel: NotificationChannel,
+        event_type: str,
+        related_id: str,
+        decision: str,
+        reason: str | None,
+        payload: dict[str, object],
+    ) -> None:
+        audit = NotificationRoutingAudit(
+            id=f"route-{uuid4().hex[:10]}",
+            channel_id=channel.id,
+            channel_name=channel.name,
+            event_type=event_type,
+            related_id=related_id,
+            decision=decision,
+            reason=reason,
+            created_at=datetime.now(),
+            payload=payload,
+        )
+        saved = self.notification_routing_audit_repo.save(audit)
+        self._maybe_escalate_routing_policy(channel, saved)
+
+    def _build_recovery_probe_payload(self, channel: NotificationChannel) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "auto_resume_probe": True,
+            "probe_profile": channel.recovery_probe_profile,
+        }
+        if channel.last_auto_paused_at is not None:
+            payload["last_auto_paused_at"] = channel.last_auto_paused_at.isoformat()
+        if channel.recovery_probe_profile in {"standard", "verbose"}:
+            payload.update(
+                {
+                    "channel_id": channel.id,
+                    "channel_name": channel.name,
+                    "channel_kind": channel.kind,
+                    "probe_mode": "post_ping" if channel.kind in {"webhook", "slack"} else "store_only",
+                }
+            )
+        if channel.recovery_probe_profile == "verbose":
+            payload.update(
+                {
+                    "paused_until": channel.paused_until.isoformat() if channel.paused_until else None,
+                    "event_types": list(channel.event_types),
+                    "auto_pause_window_hours": channel.auto_pause_window_hours,
+                    "auto_pause_error_rate_threshold": channel.auto_pause_error_rate_threshold,
+                    "auto_pause_consecutive_failures": channel.auto_pause_consecutive_failures,
+                    "headers_count": len(channel.headers),
+                }
+            )
+        payload.update(channel.recovery_probe_payload)
+        return payload
+
+    def _recovery_probe_block_reason(self, channel: NotificationChannel, now: datetime) -> str | None:
+        rows = self.notification_delivery_repo.list_saved(
+            channel_id=channel.id,
+            event_type="manual",
+            limit=500,
+        )
+        probe_rows = [item for item in rows if item.payload.get("auto_resume_probe") is True]
+        if channel.recovery_probe_cooldown_minutes > 0:
+            cooldown_since = now - timedelta(minutes=channel.recovery_probe_cooldown_minutes)
+            if any(item.triggered_at >= cooldown_since for item in probe_rows):
+                return "recovery_probe_cooldown"
+        hour_since = now - timedelta(hours=1)
+        probes_last_hour = sum(1 for item in probe_rows if item.triggered_at >= hour_since)
+        if probes_last_hour >= channel.recovery_probe_max_per_hour:
+            return "recovery_probe_rate_limited"
+        return None
+
+    def _maybe_escalate_routing_policy(
+        self,
+        source_channel: NotificationChannel,
+        audit: NotificationRoutingAudit,
+    ) -> None:
+        if not source_channel.ops_escalation_enabled:
+            return
+        if not source_channel.ops_escalation_channel_ids:
+            return
+        if audit.payload.get("policy_escalation") is True:
+            return
+        if audit.decision not in {"failed", "suppressed", "paused"}:
+            return
+        now = datetime.now()
+        if source_channel.last_ops_escalated_at and source_channel.ops_escalation_cooldown_minutes > 0:
+            cooldown_until = source_channel.last_ops_escalated_at + timedelta(
+                minutes=source_channel.ops_escalation_cooldown_minutes
+            )
+            if cooldown_until > now:
+                return
+        window_start = now - timedelta(hours=source_channel.ops_escalation_window_hours)
+        recent = self.list_notification_routing_audits(
+            channel_id=source_channel.id,
+            event_type=None,
+            decision=None,
+            limit=5000,
+        )
+        adverse = [
+            item
+            for item in recent
+            if item.created_at >= window_start and item.decision in {"failed", "suppressed", "paused"}
+        ]
+        incident = self._upsert_ops_incident(source_channel, audit, adverse_count=len(adverse))
+        if len(adverse) < source_channel.ops_escalation_threshold:
+            return
+        payload = {
+            "policy_escalation": True,
+            "ops_incident_id": incident.id,
+            "source_channel_id": source_channel.id,
+            "source_channel_name": source_channel.name,
+            "window_hours": source_channel.ops_escalation_window_hours,
+            "threshold": source_channel.ops_escalation_threshold,
+            "adverse_count": len(adverse),
+            "latest_decision": audit.decision,
+            "latest_reason": audit.reason,
+        }
+        for target_channel_id in source_channel.ops_escalation_channel_ids:
+            self._send_governed_notification(
+                channel_id=target_channel_id,
+                event_type="manual",
+                related_id=f"ops-escalation-{source_channel.id}-{audit.id}",
+                subject=f"Ops escalation: {source_channel.name}",
+                payload=payload,
+                apply_suppression=False,
+                apply_followups=False,
+            )
+        source_channel.last_ops_escalated_at = now
+        self.notification_channel_repo.save(source_channel)
+        incident.escalation_count += 1
+        incident.last_escalated_at = now
+        incident.updated_at = now
+        self.ops_incident_repo.save(incident)
+
+    def _upsert_ops_incident(
+        self,
+        source_channel: NotificationChannel,
+        audit: NotificationRoutingAudit,
+        adverse_count: int,
+    ) -> OpsIncident:
+        incident_id = f"ops-incident-{source_channel.id}"
+        now = datetime.now()
+        severity = _incident_severity(adverse_count, source_channel.ops_escalation_threshold)
+        existing = self.ops_incident_repo.get(incident_id)
+        if existing is None:
+            default_priority = _incident_default_priority(severity)
+            default_sla = _incident_default_sla_minutes(default_priority)
+            incident = OpsIncident(
+                id=incident_id,
+                source_channel_id=source_channel.id,
+                source_channel_name=source_channel.name,
+                status="open",
+                severity=severity,
+                priority=default_priority,
+                opened_at=now,
+                updated_at=now,
+                last_event_at=audit.created_at,
+                sla_minutes=default_sla,
+                due_at=now + timedelta(minutes=default_sla),
+                window_hours=source_channel.ops_escalation_window_hours,
+                threshold=source_channel.ops_escalation_threshold,
+                adverse_count=adverse_count,
+                latest_decision=audit.decision,
+                latest_reason=audit.reason,
+            )
+            return self.ops_incident_repo.save(incident)
+        if existing.status == "resolved":
+            existing.status = "open"
+            existing.resolved_at = None
+        existing.source_channel_name = source_channel.name
+        existing.severity = severity
+        existing.updated_at = now
+        existing.last_event_at = audit.created_at
+        existing.window_hours = source_channel.ops_escalation_window_hours
+        existing.threshold = source_channel.ops_escalation_threshold
+        existing.adverse_count = adverse_count
+        existing.latest_decision = audit.decision
+        existing.latest_reason = audit.reason
+        return self.ops_incident_repo.save(existing)
+
+    def _record_source_health(
+        self,
+        source_id: str,
+        source_kind: str,
+        provider: str,
+        status: str,
+        last_checked_at: datetime,
+        last_success_at: datetime | None = None,
+        last_failure_at: datetime | None = None,
+        fallback_used: bool = False,
+        error_message: str | None = None,
+        notes: str | None = None,
+    ) -> SourceHealth:
+        existing = self.source_health_repo.get(source_id)
+        if existing is None:
+            existing = SourceHealth(
+                id=source_id,
+                source_kind=source_kind,
+                provider=provider,
+                status="unknown",
+                last_checked_at=last_checked_at,
+            )
+        existing.source_kind = source_kind
+        existing.provider = provider
+        existing.status = status
+        existing.last_checked_at = last_checked_at
+        existing.fallback_used = fallback_used
+        if last_success_at is not None:
+            existing.last_success_at = last_success_at
+        if last_failure_at is not None:
+            existing.last_failure_at = last_failure_at
+            existing.consecutive_failures += 1
+        elif status == "healthy":
+            existing.consecutive_failures = 0
+        if error_message is not None:
+            existing.last_error = error_message
+        elif status == "healthy":
+            existing.last_error = None
+        if notes is not None:
+            existing.notes = notes
+        existing.is_stale = _source_health_is_stale(existing, now=last_checked_at)
+        return self.source_health_repo.save(existing)
+
+    def _record_source_health_policy_version(
+        self,
+        policy: SourceHealthPolicy,
+        action: str,
+        previous: SourceHealthPolicy | None = None,
+    ) -> SourceHealthPolicyVersion:
+        current_versions = self.source_health_policy_version_repo.list_saved(policy_id=policy.id, limit=1)
+        next_version = (current_versions[0].version_number + 1) if current_versions else 1
+        current_snapshot = policy.model_dump(mode="json")
+        previous_snapshot = previous.model_dump(mode="json") if previous is not None else {}
+        changed_fields = sorted(
+            {
+                key
+                for key in set(current_snapshot.keys()) | set(previous_snapshot.keys())
+                if current_snapshot.get(key) != previous_snapshot.get(key)
+            }
+        )
+        summary = f"{action} policy '{policy.name}'"
+        safe_action = action if action in {"create", "update", "archive", "restore", "rollback"} else "update"
+        version = SourceHealthPolicyVersion(
+            id=f"source-health-policy-version-{uuid4().hex[:10]}",
+            policy_id=policy.id,
+            version_number=next_version,
+            action=safe_action,
+            changed_at=datetime.now(),
+            changed_fields=changed_fields,
+            summary=summary,
+            snapshot=current_snapshot,
+        )
+        return self.source_health_policy_version_repo.save(version)
+
+    def _validate_source_health_policy(self, policy: SourceHealthPolicy) -> None:
+        if policy.min_consecutive_failures < 1:
+            raise ValueError("min_consecutive_failures must be at least 1.")
+        if policy.cooldown_minutes < 0:
+            raise ValueError("cooldown_minutes must be at least 0.")
+        if policy.escalation_failure_threshold < 1:
+            raise ValueError("escalation_failure_threshold must be at least 1.")
+        if policy.active_hour_start < 0 or policy.active_hour_start > 23:
+            raise ValueError("active_hour_start must be between 0 and 23.")
+        if policy.active_hour_end < 1 or policy.active_hour_end > 24:
+            raise ValueError("active_hour_end must be between 1 and 24.")
+        if policy.holiday_calendar not in {"none", "us", "uk", "eu", "jp", "cn"}:
+            raise ValueError("holiday_calendar must be one of: none, us, uk, eu, jp, cn.")
+        for weekday in policy.active_weekdays:
+            if weekday < 0 or weekday > 6:
+                raise ValueError("active_weekdays values must be between 0 (Mon) and 6 (Sun).")
+        try:
+            ZoneInfo(policy.timezone)
+        except Exception as exc:
+            raise ValueError("timezone must be a valid IANA timezone, e.g. Asia/Shanghai.") from exc
+        if policy.stale_threshold_minutes is not None and policy.stale_threshold_minutes < 1:
+            raise ValueError("stale_threshold_minutes must be at least 1 when provided.")
+        for reason, severity in policy.reason_severity.items():
+            if reason not in {"degraded", "down", "stale"}:
+                raise ValueError("reason_severity keys must be one of: degraded, down, stale.")
+            if severity not in {"low", "medium", "high"}:
+                raise ValueError("reason_severity values must be one of: low, medium, high.")
+        for reason, template in policy.reason_subject_templates.items():
+            if reason not in {"degraded", "down", "stale"}:
+                raise ValueError("reason_subject_templates keys must be one of: degraded, down, stale.")
+            if not template.strip():
+                raise ValueError("reason_subject_templates values must be non-empty.")
+        for reason, channel_ids in policy.reason_channel_overrides.items():
+            if reason not in {"degraded", "down", "stale"}:
+                raise ValueError("reason_channel_overrides keys must be one of: degraded, down, stale.")
+
+    def _verify_source_health_policy_channels(self, policy: SourceHealthPolicy) -> None:
+        for channel_ids in policy.reason_channel_overrides.values():
+            for channel_id in channel_ids:
+                self.get_notification_channel(channel_id)
+        for channel_id in policy.notification_channel_ids:
+            self.get_notification_channel(channel_id)
+        for channel_id in policy.escalation_channel_ids:
+            self.get_notification_channel(channel_id)
+
+    def _apply_source_health_policy_threshold(self, policy: SourceHealthPolicy) -> None:
+        if policy.source_id and policy.stale_threshold_minutes is not None:
+            self.set_source_stale_threshold(policy.source_id, policy.stale_threshold_minutes)
+
+    def _collect_digest_alert_events(
+        self,
+        channel: NotificationChannel,
+        status: str = "new",
+        limit: int = 25,
+    ) -> list[ChangeAlertEvent]:
+        allowed_rule_ids = {
+            rule.id
+            for rule in self.list_change_alert_rules()
+            if channel.id in rule.notification_channel_ids and rule.active
+        }
+        rows: list[ChangeAlertEvent] = []
+        for event in self.list_change_alert_events(status=status, limit=max(limit * 4, limit)):
+            if event.rule_id not in allowed_rule_ids:
+                continue
+            payload = {
+                "rule_id": event.rule_id,
+                "rule_name": event.rule_name,
+                "event_id": event.id,
+                "signal": event.signal.model_dump(mode="json"),
+            }
+            if not _notification_channel_accepts(channel, "alert_event", payload):
+                continue
+            rows.append(event)
+            if len(rows) >= limit:
+                break
+        return rows
+
     def _post_notification(self, channel: NotificationChannel, payload: dict[str, object]) -> int:
         request = urlrequest.Request(
             channel.target,
@@ -1313,6 +2891,224 @@ def _score_significance(
 
 def _significance_rank(value: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(value, 0)
+
+
+def _notification_channel_accepts(
+    channel: NotificationChannel,
+    event_type: str,
+    payload: dict[str, object],
+) -> bool:
+    allowed, _ = _notification_channel_acceptance(channel, event_type, payload)
+    return allowed
+
+
+def _channel_is_paused(channel: NotificationChannel, now: datetime | None = None) -> bool:
+    if channel.paused_until is None:
+        return False
+    now = now or datetime.now()
+    return channel.paused_until > now
+
+
+def _notification_channel_acceptance(
+    channel: NotificationChannel,
+    event_type: str,
+    payload: dict[str, object],
+) -> tuple[bool, str | None]:
+    if not channel.active:
+        return False, "channel_inactive"
+    if _channel_is_paused(channel):
+        return False, "channel_paused"
+    if event_type not in channel.event_types:
+        return False, "event_type_not_enabled"
+    if event_type != "alert_event":
+        return True, None
+    significance = _extract_payload_significance(payload)
+    if significance is None:
+        return False, "missing_significance"
+    if _significance_rank(significance) < _significance_rank(channel.min_significance):
+        return False, "significance_below_threshold"
+    return True, None
+
+
+def _incident_severity(adverse_count: int, threshold: int) -> str:
+    if adverse_count >= threshold * 3:
+        return "high"
+    if adverse_count >= threshold * 2:
+        return "medium"
+    return "low"
+
+
+def _incident_default_priority(severity: str) -> str:
+    return {"high": "high", "medium": "medium", "low": "low"}.get(severity, "medium")
+
+
+def _incident_default_sla_minutes(priority: str) -> int:
+    return {"high": 60, "medium": 240, "low": 1440}.get(priority, 240)
+
+
+def _incident_is_overdue(incident: OpsIncident, now: datetime) -> bool:
+    if incident.status == "resolved":
+        return False
+    if incident.due_at is None:
+        return False
+    return incident.due_at < now
+
+
+def _source_health_is_stale(source: SourceHealth, now: datetime) -> bool:
+    if source.last_success_at is None:
+        return False
+    stale_after = max(1, int(source.stale_threshold_minutes))
+    return source.last_success_at < (now - timedelta(minutes=stale_after))
+
+
+def _parse_source_id(source_id: str) -> tuple[str, str]:
+    if ":" not in source_id:
+        return "macro", source_id
+    left, right = source_id.split(":", 1)
+    source_kind = left if left in {"macro", "market"} else "macro"
+    provider = right or source_id
+    return source_kind, provider
+
+
+def _source_reason_default_severity(reason: str) -> str:
+    return {
+        "down": "high",
+        "degraded": "medium",
+        "stale": "low",
+    }.get(reason, "medium")
+
+
+def _render_source_health_subject_template(
+    template: str,
+    source_id: str,
+    source_kind: str,
+    provider: str,
+    reason: str,
+    status: str,
+    severity: str,
+) -> str:
+    context = {
+        "source_id": source_id,
+        "source_kind": source_kind,
+        "provider": provider,
+        "reason": reason,
+        "status": status,
+        "severity": severity,
+    }
+    try:
+        return template.format(**context)
+    except Exception:
+        return f"Source Health Alert [{severity.upper()}]: {source_id} ({reason})"
+
+
+def _source_policy_reason_in_schedule(
+    policy: SourceHealthPolicy,
+    reason: str,
+    check_time: datetime,
+) -> bool:
+    if reason == "down" and policy.allow_down_outside_schedule:
+        return True
+    local_time = _source_policy_local_time(policy, check_time)
+    local_date = local_time.date()
+    local_weekday = local_time.weekday()
+    if policy.active_weekdays and local_weekday not in set(policy.active_weekdays):
+        return False
+    if local_date in _source_policy_holiday_set(policy, local_date.year):
+        return False
+    start_hour = int(policy.active_hour_start)
+    end_hour = int(policy.active_hour_end)
+    hour = local_time.hour
+    if start_hour == 0 and end_hour == 24:
+        return True
+    if start_hour < end_hour:
+        return start_hour <= hour < end_hour
+    return hour >= start_hour or hour < end_hour
+
+
+def _source_policy_local_time(policy: SourceHealthPolicy, check_time: datetime) -> datetime:
+    policy_tz = ZoneInfo(policy.timezone)
+    if check_time.tzinfo is None:
+        system_tz = datetime.now().astimezone().tzinfo
+        if system_tz is None:
+            system_tz = ZoneInfo("UTC")
+        check_time = check_time.replace(tzinfo=system_tz)
+    return check_time.astimezone(policy_tz)
+
+
+def _source_policy_holiday_set(policy: SourceHealthPolicy, year: int) -> set[date]:
+    holidays = set(policy.holiday_dates)
+    holidays.update(_builtin_market_holidays(policy.holiday_calendar, year))
+    return holidays
+
+
+def _builtin_market_holidays(calendar: str, year: int) -> set[date]:
+    if calendar == "none":
+        return set()
+    # Baseline market holiday seeds; extend as needed per desk policy.
+    common = {date(year, 1, 1), date(year, 12, 25)}
+    if calendar == "us":
+        return common | {
+            _nth_weekday_of_month(year, 1, 0, 3),   # MLK Day
+            _nth_weekday_of_month(year, 2, 0, 3),   # Presidents' Day
+            _last_weekday_of_month(year, 5, 0),     # Memorial Day
+            _observed_fixed_holiday(date(year, 7, 4)),
+            _nth_weekday_of_month(year, 9, 0, 1),   # Labor Day
+            _nth_weekday_of_month(year, 11, 3, 4),  # Thanksgiving
+        }
+    if calendar == "uk":
+        return common | {date(year, 12, 26)}
+    if calendar == "eu":
+        return common
+    if calendar == "jp":
+        return {date(year, 1, 1), date(year, 2, 11), date(year, 12, 31)}
+    if calendar == "cn":
+        return {date(year, 1, 1), date(year, 5, 1), date(year, 10, 1), date(year, 10, 2), date(year, 10, 3)}
+    return set()
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+    first = date(year, month, 1)
+    first_offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=first_offset + (n - 1) * 7)
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        first_next = date(year + 1, 1, 1)
+    else:
+        first_next = date(year, month + 1, 1)
+    current = first_next - timedelta(days=1)
+    while current.weekday() != weekday:
+        current -= timedelta(days=1)
+    return current
+
+
+def _observed_fixed_holiday(day: date) -> date:
+    if day.weekday() == 5:
+        return day - timedelta(days=1)
+    if day.weekday() == 6:
+        return day + timedelta(days=1)
+    return day
+
+
+def _payload_meets_escalation_threshold(
+    channel: NotificationChannel,
+    payload: dict[str, object],
+) -> bool:
+    significance = _extract_payload_significance(payload)
+    if significance is None:
+        return False
+    return _significance_rank(significance) >= _significance_rank(channel.escalation_min_significance)
+
+
+def _extract_payload_significance(payload: dict[str, object]) -> str | None:
+    signal = payload.get("signal")
+    if isinstance(signal, ChangeSignal):
+        return signal.significance
+    if isinstance(signal, dict):
+        value = signal.get("significance")
+        return str(value) if value is not None else None
+    return None
 
 
 def _matches_change_alert_rule(
