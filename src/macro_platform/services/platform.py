@@ -579,7 +579,15 @@ class PlatformService:
         preset.name = preset.name.strip()
         if not preset.name:
             raise ValueError("name must be non-empty.")
-        return self.source_health_policy_version_preset_repo.save(preset)
+        saved = self.source_health_policy_version_preset_repo.save(preset)
+        if saved.is_default:
+            for item in self.list_source_health_policy_version_presets(saved.policy_id, limit=500):
+                if item.id == saved.id:
+                    continue
+                if item.is_default:
+                    item.is_default = False
+                    self.source_health_policy_version_preset_repo.save(item)
+        return saved
 
     def delete_source_health_policy_version_preset(self, preset_id: str) -> None:
         self.get_source_health_policy_version_preset(preset_id)
@@ -594,9 +602,15 @@ class PlatformService:
         clone = preset.model_copy(deep=True)
         clone.id = f"source-policy-version-preset-{uuid4().hex[:8]}"
         clone.name = (name or f"{preset.name} copy").strip()
+        clone.is_default = False
         if not clone.name:
             raise ValueError("name must be non-empty.")
         return self.save_source_health_policy_version_preset(clone)
+
+    def set_default_source_health_policy_version_preset(self, preset_id: str) -> SourceHealthPolicyVersionPreset:
+        preset = self.get_source_health_policy_version_preset(preset_id)
+        preset.is_default = True
+        return self.save_source_health_policy_version_preset(preset)
 
     def get_source_health_policy_version(self, version_id: str) -> SourceHealthPolicyVersion:
         version = self.source_health_policy_version_repo.get(version_id)

@@ -181,6 +181,7 @@ class SourceHealthPolicyVersionPreset(BaseModel):
     action_filter: str | None = None
     query: str | None = None
     limit: int = 20
+    is_default: bool = False
     owner_scope: Literal["shared", "private"] = "shared"
 
 

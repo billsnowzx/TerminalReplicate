@@ -433,16 +433,24 @@ elif view == "Data Quality":
                     updated = service.restore_source_health_policy(editing_policy.id)
                     st.success(f"Restored policy: {updated.name}")
             version_presets = service.list_source_health_policy_version_presets(editing_policy.id, limit=50)
+            preset_options = ["Custom"] + [item.id for item in version_presets]
+            default_preset = next((item for item in version_presets if item.is_default), None)
+            preset_select_key = f"source_policy_version_preset_select_{state_key}"
+            if preset_select_key not in st.session_state:
+                st.session_state[preset_select_key] = default_preset.id if default_preset is not None else "Custom"
+            if st.session_state[preset_select_key] not in preset_options:
+                st.session_state[preset_select_key] = "Custom"
             selected_preset = None
             preset_selector = st.selectbox(
                 "Version preset",
-                ["Custom"] + [item.id for item in version_presets],
+                preset_options,
                 format_func=lambda x: "Custom filters" if x == "Custom" else next(
-                    f"{item.name} (action={item.action_filter or 'all'}, query={item.query or 'blank'})"
+                    f"{item.name}{' [default]' if item.is_default else ''} "
+                    f"(action={item.action_filter or 'all'}, query={item.query or 'blank'})"
                     for item in version_presets
                     if item.id == x
                 ),
-                key=f"source_policy_version_preset_select_{state_key}",
+                key=preset_select_key,
             )
             if preset_selector != "Custom":
                 selected_preset = next(item for item in version_presets if item.id == preset_selector)
@@ -473,6 +481,11 @@ elif view == "Data Quality":
                 key=f"source_policy_version_limit_{state_key}",
             )
             with load_right:
+                preset_is_default = st.checkbox(
+                    "Mark saved preset as default",
+                    value=False if selected_preset is None else selected_preset.is_default,
+                    key=f"source_policy_version_is_default_{state_key}",
+                )
                 preset_name = st.text_input(
                     "Save preset as",
                     value="",
@@ -486,12 +499,14 @@ elif view == "Data Quality":
                         action_filter=None if version_action_filter == "all" else version_action_filter,
                         query=version_query or None,
                         limit=int(version_limit),
+                        is_default=bool(preset_is_default),
                         owner_scope="shared",
                     )
                     service.save_source_health_policy_version_preset(preset)
                     st.success(f"Saved version preset: {preset.name}")
+                    st.rerun()
                 if selected_preset is not None:
-                    st.caption(f"Selected preset: {selected_preset.name}")
+                    st.caption(f"Selected preset: {selected_preset.name}{' [default]' if selected_preset.is_default else ''}")
                     if st.button("Update selected preset", key=f"source_policy_update_version_preset_{state_key}"):
                         updated_preset = SourceHealthPolicyVersionPreset(
                             id=selected_preset.id,
@@ -500,10 +515,16 @@ elif view == "Data Quality":
                             action_filter=None if version_action_filter == "all" else version_action_filter,
                             query=version_query or None,
                             limit=int(version_limit),
+                            is_default=bool(preset_is_default),
                             owner_scope=selected_preset.owner_scope,
                         )
                         service.save_source_health_policy_version_preset(updated_preset)
                         st.success(f"Updated version preset: {selected_preset.name}")
+                        st.rerun()
+                    if st.button("Set selected as default", key=f"source_policy_set_default_version_preset_{state_key}"):
+                        updated = service.set_default_source_health_policy_version_preset(selected_preset.id)
+                        st.success(f"Default preset set: {updated.name}")
+                        st.rerun()
                     clone_name = st.text_input(
                         "Clone as",
                         value=f"{selected_preset.name} copy",

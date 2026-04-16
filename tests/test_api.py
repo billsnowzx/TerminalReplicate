@@ -1805,6 +1805,7 @@ def test_source_health_policy_version_presets_can_be_saved_and_loaded(client):
         "action_filter": "update",
         "query": "trigger_on_stale",
         "limit": 10,
+        "is_default": True,
         "owner_scope": "shared",
     }
     saved = client.post("/api/status/sources/policies/version-presets", json=preset_payload)
@@ -1814,6 +1815,7 @@ def test_source_health_policy_version_presets_can_be_saved_and_loaded(client):
     preset_rows = rows.json()
     assert len(preset_rows) == 1
     assert preset_rows[0]["name"] == "Updates only"
+    assert preset_rows[0]["is_default"] is True
     fetched = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-1")
     assert fetched.status_code == 200
     assert fetched.json()["query"] == "trigger_on_stale"
@@ -1825,11 +1827,35 @@ def test_source_health_policy_version_presets_can_be_saved_and_loaded(client):
     fetched_updated = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-1")
     assert fetched_updated.status_code == 200
     assert fetched_updated.json()["query"] == "updated"
+    second_preset = client.post(
+        "/api/status/sources/policies/version-presets",
+        json={
+            "id": "source-policy-version-preset-2",
+            "policy_id": "source-policy-preset-1",
+            "name": "All events",
+            "action_filter": None,
+            "query": None,
+            "limit": 20,
+            "is_default": False,
+            "owner_scope": "shared",
+        },
+    )
+    assert second_preset.status_code == 200
+    set_default = client.post("/api/status/sources/policies/version-presets/source-policy-version-preset-2/set-default")
+    assert set_default.status_code == 200
+    assert set_default.json()["is_default"] is True
+    rows_after_default = client.get("/api/status/sources/policies/source-policy-preset-1/version-presets")
+    assert rows_after_default.status_code == 200
+    defaults = [item for item in rows_after_default.json() if item.get("is_default")]
+    assert len(defaults) == 1
+    assert defaults[0]["id"] == "source-policy-version-preset-2"
     deleted = client.delete("/api/status/sources/policies/version-presets/source-policy-version-preset-1")
     assert deleted.status_code == 200
     assert deleted.json()["status"] == "deleted"
     assert client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-1").status_code == 404
-    assert client.get("/api/status/sources/policies/source-policy-preset-1/version-presets").json() == []
+    remaining = client.get("/api/status/sources/policies/source-policy-preset-1/version-presets")
+    assert remaining.status_code == 200
+    assert len(remaining.json()) == 1
 
 
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):
@@ -1865,6 +1891,7 @@ def test_source_health_policy_version_preset_clone_creates_new_preset(client):
         "action_filter": "update",
         "query": "name",
         "limit": 10,
+        "is_default": True,
         "owner_scope": "shared",
     }
     assert client.post("/api/status/sources/policies/version-presets", json=preset_payload).status_code == 200
@@ -1876,10 +1903,14 @@ def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     clone_row = clone.json()
     assert clone_row["name"] == "Cloned preset"
     assert clone_row["id"] != "source-policy-version-preset-clone-source"
+    assert clone_row["is_default"] is False
     rows = client.get("/api/status/sources/policies/source-policy-clone-1/version-presets")
     assert rows.status_code == 200
     names = sorted(item["name"] for item in rows.json())
     assert names == ["Base preset", "Cloned preset"]
+    defaults = [item for item in rows.json() if item.get("is_default")]
+    assert len(defaults) == 1
+    assert defaults[0]["id"] == "source-policy-version-preset-clone-source"
 
 
 def test_scheduler_poll_runs_source_health_policy_worker_cycle(client):

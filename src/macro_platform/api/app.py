@@ -240,6 +240,16 @@ def clone_source_health_policy_version_preset(preset_id: str, name: str | None =
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/status/sources/policies/version-presets/{preset_id}/set-default")
+def set_default_source_health_policy_version_preset(preset_id: str):
+    try:
+        return service.set_default_source_health_policy_version_preset(preset_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/status/sources/policies/versions/{version_id}")
 def get_source_health_policy_version(version_id: str):
     try:
