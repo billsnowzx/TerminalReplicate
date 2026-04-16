@@ -37,7 +37,7 @@ OpenBB-first research platform scaffold for macro analysis, cross-asset monitori
 - Policy scheduling windows (active weekdays/hours) with optional critical `down` bypass outside schedule
 - Per-policy timezone and holiday controls (built-in regional calendars + custom holiday date overrides)
 - Soft-delete policy lifecycle with archive/restore controls while preserving policy-run history
-- Policy version history with per-change snapshots/diffs for create, update, archive, restore, rollback, and version comparison actions, with saved filter presets, filtering, and JSON/CSV export in the UI
+- Policy version history with per-change snapshots/diffs for create, update, archive, restore, rollback, and version comparison actions, with saved filter presets, preset editing, filtering, and JSON/CSV export in the UI
 - Tests for catalog shape, analytics, and API behavior
 
 ## Quick start

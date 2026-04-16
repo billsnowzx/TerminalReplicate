@@ -581,6 +581,10 @@ class PlatformService:
             raise ValueError("name must be non-empty.")
         return self.source_health_policy_version_preset_repo.save(preset)
 
+    def delete_source_health_policy_version_preset(self, preset_id: str) -> None:
+        self.get_source_health_policy_version_preset(preset_id)
+        self.source_health_policy_version_preset_repo.delete(preset_id)
+
     def get_source_health_policy_version(self, version_id: str) -> SourceHealthPolicyVersion:
         version = self.source_health_policy_version_repo.get(version_id)
         if version is None:

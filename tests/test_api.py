@@ -1817,6 +1817,19 @@ def test_source_health_policy_version_presets_can_be_saved_and_loaded(client):
     fetched = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-1")
     assert fetched.status_code == 200
     assert fetched.json()["query"] == "trigger_on_stale"
+    updated = client.post(
+        "/api/status/sources/policies/version-presets",
+        json={**preset_payload, "query": "updated", "limit": 5},
+    )
+    assert updated.status_code == 200
+    fetched_updated = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-1")
+    assert fetched_updated.status_code == 200
+    assert fetched_updated.json()["query"] == "updated"
+    deleted = client.delete("/api/status/sources/policies/version-presets/source-policy-version-preset-1")
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "deleted"
+    assert client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-1").status_code == 404
+    assert client.get("/api/status/sources/policies/source-policy-preset-1/version-presets").json() == []
 
 
 def test_scheduler_poll_runs_source_health_policy_worker_cycle(client):

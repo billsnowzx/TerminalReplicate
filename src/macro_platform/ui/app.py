@@ -433,6 +433,7 @@ elif view == "Data Quality":
                     updated = service.restore_source_health_policy(editing_policy.id)
                     st.success(f"Restored policy: {updated.name}")
             version_presets = service.list_source_health_policy_version_presets(editing_policy.id, limit=50)
+            selected_preset = None
             preset_selector = st.selectbox(
                 "Version preset",
                 ["Custom"] + [item.id for item in version_presets],
@@ -443,13 +444,14 @@ elif view == "Data Quality":
                 ),
                 key=f"source_policy_version_preset_select_{state_key}",
             )
+            if preset_selector != "Custom":
+                selected_preset = next(item for item in version_presets if item.id == preset_selector)
             load_left, load_right = st.columns(2)
             with load_left:
-                if preset_selector != "Custom" and st.button("Load preset", key=f"source_policy_load_version_preset_{state_key}"):
-                    preset = next(item for item in version_presets if item.id == preset_selector)
-                    st.session_state[f"source_policy_version_action_{state_key}"] = preset.action_filter or "all"
-                    st.session_state[f"source_policy_version_query_{state_key}"] = preset.query or ""
-                    st.session_state[f"source_policy_version_limit_{state_key}"] = int(preset.limit)
+                if selected_preset is not None and st.button("Load preset", key=f"source_policy_load_version_preset_{state_key}"):
+                    st.session_state[f"source_policy_version_action_{state_key}"] = selected_preset.action_filter or "all"
+                    st.session_state[f"source_policy_version_query_{state_key}"] = selected_preset.query or ""
+                    st.session_state[f"source_policy_version_limit_{state_key}"] = int(selected_preset.limit)
                     st.rerun()
             version_action_filter = st.selectbox(
                 "Version action filter",
@@ -488,6 +490,24 @@ elif view == "Data Quality":
                     )
                     service.save_source_health_policy_version_preset(preset)
                     st.success(f"Saved version preset: {preset.name}")
+                if selected_preset is not None:
+                    st.caption(f"Selected preset: {selected_preset.name}")
+                    if st.button("Update selected preset", key=f"source_policy_update_version_preset_{state_key}"):
+                        updated_preset = SourceHealthPolicyVersionPreset(
+                            id=selected_preset.id,
+                            policy_id=editing_policy.id,
+                            name=selected_preset.name,
+                            action_filter=None if version_action_filter == "all" else version_action_filter,
+                            query=version_query or None,
+                            limit=int(version_limit),
+                            owner_scope=selected_preset.owner_scope,
+                        )
+                        service.save_source_health_policy_version_preset(updated_preset)
+                        st.success(f"Updated version preset: {selected_preset.name}")
+                    if st.button("Delete selected preset", key=f"source_policy_delete_version_preset_{state_key}"):
+                        service.delete_source_health_policy_version_preset(selected_preset.id)
+                        st.success(f"Deleted version preset: {selected_preset.name}")
+                        st.rerun()
             version_rows = service.list_source_health_policy_versions(
                 editing_policy.id,
                 limit=int(version_limit),

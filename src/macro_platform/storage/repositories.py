@@ -678,6 +678,10 @@ class SourceHealthPolicyVersionPresetRepository:
             )
         return preset
 
+    def delete(self, preset_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(SourceHealthPolicyVersionPresetRecord).where(SourceHealthPolicyVersionPresetRecord.id == preset_id))
+
 
 class NotificationDigestRepository:
     def __init__(self, database: Database) -> None:
