@@ -8,6 +8,7 @@ node_modules/
 data/*.db
 data/*.json
 data/notifications/
+data/
 data/raw/*.parquet
 data/report_scripts/
 data/reports/
