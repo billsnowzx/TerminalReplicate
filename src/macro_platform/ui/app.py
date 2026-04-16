@@ -504,6 +504,15 @@ elif view == "Data Quality":
                         )
                         service.save_source_health_policy_version_preset(updated_preset)
                         st.success(f"Updated version preset: {selected_preset.name}")
+                    clone_name = st.text_input(
+                        "Clone as",
+                        value=f"{selected_preset.name} copy",
+                        key=f"source_policy_clone_version_preset_name_{state_key}",
+                    )
+                    if st.button("Clone selected preset", key=f"source_policy_clone_version_preset_{state_key}"):
+                        clone = service.clone_source_health_policy_version_preset(selected_preset.id, name=clone_name)
+                        st.success(f"Cloned version preset: {clone.name}")
+                        st.rerun()
                     if st.button("Delete selected preset", key=f"source_policy_delete_version_preset_{state_key}"):
                         service.delete_source_health_policy_version_preset(selected_preset.id)
                         st.success(f"Deleted version preset: {selected_preset.name}")
