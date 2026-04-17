@@ -590,8 +590,14 @@ class PlatformService:
         return saved
 
     def delete_source_health_policy_version_preset(self, preset_id: str) -> None:
-        self.get_source_health_policy_version_preset(preset_id)
+        deleted = self.get_source_health_policy_version_preset(preset_id)
         self.source_health_policy_version_preset_repo.delete(preset_id)
+        if deleted.is_default:
+            remaining = self.list_source_health_policy_version_presets(deleted.policy_id, limit=500)
+            if remaining:
+                promoted = remaining[0]
+                promoted.is_default = True
+                self.save_source_health_policy_version_preset(promoted)
 
     def clone_source_health_policy_version_preset(
         self,

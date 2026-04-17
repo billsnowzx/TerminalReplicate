@@ -1856,6 +1856,8 @@ def test_source_health_policy_version_presets_can_be_saved_and_loaded(client):
     remaining = client.get("/api/status/sources/policies/source-policy-preset-1/version-presets")
     assert remaining.status_code == 200
     assert len(remaining.json()) == 1
+    assert remaining.json()[0]["id"] == "source-policy-version-preset-2"
+    assert remaining.json()[0]["is_default"] is True
 
 
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):
