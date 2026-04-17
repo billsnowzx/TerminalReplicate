@@ -514,9 +514,12 @@ elif view == "Data Quality":
                         is_default=bool(preset_is_default),
                         owner_scope="shared",
                     )
-                    service.save_source_health_policy_version_preset(preset)
-                    st.success(f"Saved version preset: {preset.name}")
-                    st.rerun()
+                    try:
+                        service.save_source_health_policy_version_preset(preset)
+                        st.success(f"Saved version preset: {preset.name}")
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
                 if selected_preset is not None:
                     st.caption(f"Selected preset: {selected_preset.name}{' [default]' if selected_preset.is_default else ''}")
                     rename_name = st.text_input(
@@ -525,9 +528,12 @@ elif view == "Data Quality":
                         key=f"source_policy_rename_version_preset_name_{state_key}",
                     )
                     if st.button("Rename selected preset", key=f"source_policy_rename_version_preset_{state_key}"):
-                        updated = service.rename_source_health_policy_version_preset(selected_preset.id, rename_name)
-                        st.success(f"Renamed version preset: {updated.name}")
-                        st.rerun()
+                        try:
+                            updated = service.rename_source_health_policy_version_preset(selected_preset.id, rename_name)
+                            st.success(f"Renamed version preset: {updated.name}")
+                            st.rerun()
+                        except ValueError as exc:
+                            st.error(str(exc))
                     if st.button("Update selected preset", key=f"source_policy_update_version_preset_{state_key}"):
                         updated_preset = SourceHealthPolicyVersionPreset(
                             id=selected_preset.id,
@@ -539,9 +545,12 @@ elif view == "Data Quality":
                             is_default=bool(preset_is_default),
                             owner_scope=selected_preset.owner_scope,
                         )
-                        service.save_source_health_policy_version_preset(updated_preset)
-                        st.success(f"Updated version preset: {selected_preset.name}")
-                        st.rerun()
+                        try:
+                            service.save_source_health_policy_version_preset(updated_preset)
+                            st.success(f"Updated version preset: {selected_preset.name}")
+                            st.rerun()
+                        except ValueError as exc:
+                            st.error(str(exc))
                     if st.button("Set selected as default", key=f"source_policy_set_default_version_preset_{state_key}"):
                         updated = service.set_default_source_health_policy_version_preset(selected_preset.id)
                         st.success(f"Default preset set: {updated.name}")
@@ -552,9 +561,12 @@ elif view == "Data Quality":
                         key=f"source_policy_clone_version_preset_name_{state_key}",
                     )
                     if st.button("Clone selected preset", key=f"source_policy_clone_version_preset_{state_key}"):
-                        clone = service.clone_source_health_policy_version_preset(selected_preset.id, name=clone_name)
-                        st.success(f"Cloned version preset: {clone.name}")
-                        st.rerun()
+                        try:
+                            clone = service.clone_source_health_policy_version_preset(selected_preset.id, name=clone_name)
+                            st.success(f"Cloned version preset: {clone.name}")
+                            st.rerun()
+                        except ValueError as exc:
+                            st.error(str(exc))
                     if st.button("Delete selected preset", key=f"source_policy_delete_version_preset_{state_key}"):
                         service.delete_source_health_policy_version_preset(selected_preset.id)
                         st.success(f"Deleted version preset: {selected_preset.name}")

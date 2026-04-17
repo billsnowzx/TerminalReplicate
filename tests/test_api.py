@@ -1906,6 +1906,70 @@ def test_source_health_policy_version_preset_versions_endpoint_applies_filters(c
     assert "trigger_on_stale" in payload[0]["changed_fields"]
 
 
+def test_source_health_policy_version_preset_rejects_duplicate_names_per_policy(client):
+    channel_payload = {
+        "id": "source-policy-preset-dup-drop",
+        "name": "Source Policy Preset Dup Drop",
+        "kind": "file",
+        "target": "source-policy-preset-dup",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-dup-1",
+        "name": "Source Policy Preset Dup",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-dup-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    first = {
+        "id": "source-policy-version-preset-dup-1",
+        "policy_id": "source-policy-preset-dup-1",
+        "name": "Duplicates Blocked",
+        "action_filter": "update",
+        "query": "name",
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=first).status_code == 200
+    second = {
+        "id": "source-policy-version-preset-dup-2",
+        "policy_id": "source-policy-preset-dup-1",
+        "name": "  duplicates blocked  ",
+        "action_filter": None,
+        "query": None,
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    duplicate = client.post("/api/status/sources/policies/version-presets", json=second)
+    assert duplicate.status_code == 400
+    assert "already exists for this policy" in duplicate.json()["detail"]
+    imported = client.post(
+        "/api/status/sources/policies/source-policy-preset-dup-1/version-presets/import",
+        json={
+            "mode": "append",
+            "presets": [
+                {"name": "DuplicateS Blocked", "action_filter": "update", "query": "x", "limit": 5},
+                {"name": "Fresh Name", "action_filter": None, "query": None, "limit": 5},
+            ],
+        },
+    )
+    assert imported.status_code == 400
+    assert "already exist for this policy" in imported.json()["detail"]
+
+
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     channel_payload = {
         "id": "source-policy-clone-drop",
