@@ -212,6 +212,17 @@ def get_source_health_policy_version_preset(preset_id: str):
         raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
 
 
+@app.get("/api/status/sources/policies/version-presets/{preset_id}/versions")
+def list_source_health_policy_versions_by_preset(preset_id: str):
+    try:
+        return [
+            item.model_dump(mode="json")
+            for item in service.list_source_health_policy_versions_by_preset(preset_id=preset_id)
+        ]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
+
+
 @app.post("/api/status/sources/policies/version-presets")
 def save_source_health_policy_version_preset(preset: SourceHealthPolicyVersionPreset):
     try:

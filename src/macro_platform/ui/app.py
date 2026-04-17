@@ -455,6 +455,9 @@ elif view == "Data Quality":
             )
             if preset_selector != "Custom":
                 selected_preset = next(item for item in version_presets if item.id == preset_selector)
+            preview_key = f"source_policy_version_preset_preview_rows_{state_key}"
+            if preview_key not in st.session_state:
+                st.session_state[preview_key] = []
             load_left, load_right = st.columns(2)
             with load_left:
                 if selected_preset is not None and st.button("Load preset", key=f"source_policy_load_version_preset_{state_key}"):
@@ -462,6 +465,14 @@ elif view == "Data Quality":
                     st.session_state[f"source_policy_version_query_{state_key}"] = selected_preset.query or ""
                     st.session_state[f"source_policy_version_limit_{state_key}"] = int(selected_preset.limit)
                     st.rerun()
+                if selected_preset is not None and st.button(
+                    "Preview selected preset",
+                    key=f"source_policy_preview_version_preset_{state_key}",
+                ):
+                    st.session_state[preview_key] = [
+                        item.model_dump(mode="json")
+                        for item in service.list_source_health_policy_versions_by_preset(selected_preset.id)
+                    ]
             version_action_filter = st.selectbox(
                 "Version action filter",
                 ["all", "create", "update", "archive", "restore", "rollback"],
@@ -594,6 +605,10 @@ elif view == "Data Quality":
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Import failed: {exc}")
+            preview_rows = st.session_state.get(preview_key, [])
+            if preview_rows:
+                st.caption("Preset preview result")
+                st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
             version_rows = service.list_source_health_policy_versions(
                 editing_policy.id,
                 limit=int(version_limit),

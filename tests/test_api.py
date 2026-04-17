@@ -1860,6 +1860,52 @@ def test_source_health_policy_version_presets_can_be_saved_and_loaded(client):
     assert remaining.json()[0]["is_default"] is True
 
 
+def test_source_health_policy_version_preset_versions_endpoint_applies_filters(client):
+    channel_payload = {
+        "id": "source-policy-preset-versions-drop",
+        "name": "Source Policy Preset Versions Drop",
+        "kind": "file",
+        "target": "source-policy-preset-versions",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-versions-1",
+        "name": "Source Policy Preset Versions",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-versions-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    assert client.post("/api/status/sources/policies", json={**policy_payload, "trigger_on_stale": True}).status_code == 200
+    preset_payload = {
+        "id": "source-policy-version-preset-versions-1",
+        "policy_id": "source-policy-preset-versions-1",
+        "name": "Updates trigger filter",
+        "action_filter": "update",
+        "query": "trigger_on_stale",
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_payload).status_code == 200
+    rows = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-versions-1/versions")
+    assert rows.status_code == 200
+    payload = rows.json()
+    assert len(payload) == 1
+    assert payload[0]["action"] == "update"
+    assert "trigger_on_stale" in payload[0]["changed_fields"]
+
+
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     channel_payload = {
         "id": "source-policy-clone-drop",

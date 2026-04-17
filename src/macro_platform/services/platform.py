@@ -562,6 +562,18 @@ class PlatformService:
         self.get_source_health_policy(policy_id)
         return self.source_health_policy_version_preset_repo.list_saved(policy_id=policy_id, limit=limit)
 
+    def list_source_health_policy_versions_by_preset(
+        self,
+        preset_id: str,
+    ) -> list[SourceHealthPolicyVersion]:
+        preset = self.get_source_health_policy_version_preset(preset_id)
+        return self.list_source_health_policy_versions(
+            policy_id=preset.policy_id,
+            limit=int(preset.limit),
+            action=preset.action_filter,
+            query=preset.query,
+        )
+
     def get_source_health_policy_version_preset(self, preset_id: str) -> SourceHealthPolicyVersionPreset:
         preset = self.source_health_policy_version_preset_repo.get(preset_id)
         if preset is None:
