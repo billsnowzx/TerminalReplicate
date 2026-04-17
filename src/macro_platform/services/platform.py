@@ -618,6 +618,16 @@ class PlatformService:
         preset.is_default = True
         return self.save_source_health_policy_version_preset(preset)
 
+    def rename_source_health_policy_version_preset(
+        self,
+        preset_id: str,
+        name: str,
+    ) -> SourceHealthPolicyVersionPreset:
+        preset = self.get_source_health_policy_version_preset(preset_id)
+        updated = preset.model_copy(deep=True)
+        updated.name = name
+        return self.save_source_health_policy_version_preset(updated)
+
     def get_source_health_policy_version(self, version_id: str) -> SourceHealthPolicyVersion:
         version = self.source_health_policy_version_repo.get(version_id)
         if version is None:

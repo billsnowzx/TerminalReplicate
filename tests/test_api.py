@@ -1915,6 +1915,60 @@ def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     assert defaults[0]["id"] == "source-policy-version-preset-clone-source"
 
 
+def test_source_health_policy_version_preset_rename_updates_name_and_validates_non_empty(client):
+    channel_payload = {
+        "id": "source-policy-rename-drop",
+        "name": "Source Policy Rename Drop",
+        "kind": "file",
+        "target": "source-policy-rename",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-rename-1",
+        "name": "Source Policy Rename",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-rename-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    preset_payload = {
+        "id": "source-policy-version-preset-rename-source",
+        "policy_id": "source-policy-rename-1",
+        "name": "Before rename",
+        "action_filter": "update",
+        "query": "name",
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_payload).status_code == 200
+    renamed = client.post(
+        "/api/status/sources/policies/version-presets/source-policy-version-preset-rename-source/rename",
+        params={"name": "After rename"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "After rename"
+    fetched = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-rename-source")
+    assert fetched.status_code == 200
+    assert fetched.json()["name"] == "After rename"
+    invalid = client.post(
+        "/api/status/sources/policies/version-presets/source-policy-version-preset-rename-source/rename",
+        params={"name": "   "},
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"] == "name must be non-empty."
+
+
 def test_scheduler_poll_runs_source_health_policy_worker_cycle(client):
     channel_payload = {
         "id": "worker-source-policy-drop",

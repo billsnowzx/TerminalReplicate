@@ -507,6 +507,15 @@ elif view == "Data Quality":
                     st.rerun()
                 if selected_preset is not None:
                     st.caption(f"Selected preset: {selected_preset.name}{' [default]' if selected_preset.is_default else ''}")
+                    rename_name = st.text_input(
+                        "Rename selected preset",
+                        value=selected_preset.name,
+                        key=f"source_policy_rename_version_preset_name_{state_key}",
+                    )
+                    if st.button("Rename selected preset", key=f"source_policy_rename_version_preset_{state_key}"):
+                        updated = service.rename_source_health_policy_version_preset(selected_preset.id, rename_name)
+                        st.success(f"Renamed version preset: {updated.name}")
+                        st.rerun()
                     if st.button("Update selected preset", key=f"source_policy_update_version_preset_{state_key}"):
                         updated_preset = SourceHealthPolicyVersionPreset(
                             id=selected_preset.id,
