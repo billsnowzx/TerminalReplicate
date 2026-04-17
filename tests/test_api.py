@@ -1969,6 +1969,91 @@ def test_source_health_policy_version_preset_rename_updates_name_and_validates_n
     assert invalid.json()["detail"] == "name must be non-empty."
 
 
+def test_source_health_policy_version_preset_export_and_import_bundle(client):
+    channel_payload = {
+        "id": "source-policy-export-import-drop",
+        "name": "Source Policy Export Import Drop",
+        "kind": "file",
+        "target": "source-policy-export-import",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    source_policy_payload = {
+        "id": "source-policy-export-source",
+        "name": "Source Policy Export Source",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-export-import-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    target_policy_payload = {
+        "id": "source-policy-export-target",
+        "name": "Source Policy Export Target",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-export-import-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=source_policy_payload).status_code == 200
+    assert client.post("/api/status/sources/policies", json=target_policy_payload).status_code == 200
+    preset_one = {
+        "id": "source-policy-version-preset-export-1",
+        "policy_id": "source-policy-export-source",
+        "name": "Export Default",
+        "action_filter": "update",
+        "query": "trigger",
+        "limit": 10,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    preset_two = {
+        "id": "source-policy-version-preset-export-2",
+        "policy_id": "source-policy-export-source",
+        "name": "Export Secondary",
+        "action_filter": None,
+        "query": None,
+        "limit": 25,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_one).status_code == 200
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_two).status_code == 200
+    exported = client.get("/api/status/sources/policies/source-policy-export-source/version-presets/export")
+    assert exported.status_code == 200
+    export_payload = exported.json()
+    assert export_payload["policy_id"] == "source-policy-export-source"
+    assert len(export_payload["presets"]) == 2
+    imported = client.post(
+        "/api/status/sources/policies/source-policy-export-target/version-presets/import",
+        json={"mode": "replace", "presets": export_payload["presets"]},
+    )
+    assert imported.status_code == 200
+    imported_rows = imported.json()
+    assert len(imported_rows) == 2
+    assert all(item["policy_id"] == "source-policy-export-target" for item in imported_rows)
+    assert all(item["id"] not in {"source-policy-version-preset-export-1", "source-policy-version-preset-export-2"} for item in imported_rows)
+    target_rows = client.get("/api/status/sources/policies/source-policy-export-target/version-presets")
+    assert target_rows.status_code == 200
+    assert len(target_rows.json()) == 2
+    defaults = [item for item in target_rows.json() if item.get("is_default")]
+    assert len(defaults) == 1
+    assert defaults[0]["name"] == "Export Default"
+
+
 def test_scheduler_poll_runs_source_health_policy_worker_cycle(client):
     channel_payload = {
         "id": "worker-source-policy-drop",

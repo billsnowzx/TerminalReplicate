@@ -23,6 +23,7 @@ from macro_platform.domain.models import (
     ScreenFilter,
     ScreenSpec,
     SourceHealthPolicy,
+    SourceHealthPolicyVersionPresetImportRequest,
     SourceHealthPolicyVersionPreset,
     Watchlist,
 )
@@ -428,10 +429,10 @@ elif view == "Data Quality":
                     if editing_policy.archived_reason:
                         st.caption(f"Reason: {editing_policy.archived_reason}")
             with lifecycle_right:
-            if editing_policy.archived_at is not None:
-                if st.button("Restore policy", key=f"source_policy_restore_button_{state_key}"):
-                    updated = service.restore_source_health_policy(editing_policy.id)
-                    st.success(f"Restored policy: {updated.name}")
+                if editing_policy.archived_at is not None:
+                    if st.button("Restore policy", key=f"source_policy_restore_button_{state_key}"):
+                        updated = service.restore_source_health_policy(editing_policy.id)
+                        st.success(f"Restored policy: {updated.name}")
             version_presets = service.list_source_health_policy_version_presets(editing_policy.id, limit=50)
             preset_options = ["Custom"] + [item.id for item in version_presets]
             default_preset = next((item for item in version_presets if item.is_default), None)
@@ -547,6 +548,52 @@ elif view == "Data Quality":
                         service.delete_source_health_policy_version_preset(selected_preset.id)
                         st.success(f"Deleted version preset: {selected_preset.name}")
                         st.rerun()
+                st.caption("Preset bundle import/export")
+                export_text_key = f"source_policy_version_preset_bundle_{state_key}"
+                if export_text_key not in st.session_state:
+                    st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
+                        editing_policy.id
+                    ).model_dump_json(indent=2)
+                refresh_export_key = f"source_policy_refresh_version_preset_bundle_{state_key}"
+                if st.button("Refresh preset bundle JSON", key=refresh_export_key):
+                    st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
+                        editing_policy.id
+                    ).model_dump_json(indent=2)
+                bundle_json = st.text_area(
+                    "Preset bundle JSON",
+                    height=220,
+                    key=export_text_key,
+                )
+                import_mode = st.selectbox(
+                    "Import mode",
+                    ["append", "replace"],
+                    index=0,
+                    key=f"source_policy_import_version_preset_mode_{state_key}",
+                )
+                if st.button("Import preset bundle", key=f"source_policy_import_version_preset_{state_key}"):
+                    try:
+                        payload = json.loads(bundle_json)
+                        preset_rows: list[dict[str, object]]
+                        if isinstance(payload, dict) and isinstance(payload.get("presets"), list):
+                            preset_rows = payload["presets"]
+                        elif isinstance(payload, list):
+                            preset_rows = payload
+                        else:
+                            raise ValueError("Preset bundle must be a JSON object with 'presets' or a JSON list.")
+                        import_request = SourceHealthPolicyVersionPresetImportRequest.model_validate(
+                            {"mode": import_mode, "presets": preset_rows}
+                        )
+                        imported = service.import_source_health_policy_version_presets(
+                            policy_id=editing_policy.id,
+                            request=import_request,
+                        )
+                        st.success(f"Imported {len(imported)} preset(s) in {import_mode} mode.")
+                        st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
+                            editing_policy.id
+                        ).model_dump_json(indent=2)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Import failed: {exc}")
             version_rows = service.list_source_health_policy_versions(
                 editing_policy.id,
                 limit=int(version_limit),

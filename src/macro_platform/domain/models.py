@@ -185,6 +185,26 @@ class SourceHealthPolicyVersionPreset(BaseModel):
     owner_scope: Literal["shared", "private"] = "shared"
 
 
+class SourceHealthPolicyVersionPresetImportItem(BaseModel):
+    name: str
+    action_filter: str | None = None
+    query: str | None = None
+    limit: int = 20
+    is_default: bool = False
+    owner_scope: Literal["shared", "private"] = "shared"
+
+
+class SourceHealthPolicyVersionPresetImportRequest(BaseModel):
+    mode: Literal["append", "replace"] = "append"
+    presets: list[SourceHealthPolicyVersionPresetImportItem] = Field(default_factory=list)
+
+
+class SourceHealthPolicyVersionPresetExportBundle(BaseModel):
+    policy_id: str
+    exported_at: datetime
+    presets: list[SourceHealthPolicyVersionPreset] = Field(default_factory=list)
+
+
 class ChangeSignal(BaseModel):
     entity_type: Literal["series", "asset"]
     key: str

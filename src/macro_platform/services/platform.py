@@ -47,6 +47,9 @@ from macro_platform.domain.models import (
     SourceHealthPolicy,
     SourceHealthPolicyRun,
     SourceHealthPolicyVersion,
+    SourceHealthPolicyVersionPresetExportBundle,
+    SourceHealthPolicyVersionPresetImportItem,
+    SourceHealthPolicyVersionPresetImportRequest,
     SourceHealthPolicyVersionPreset,
     Watchlist,
 )
@@ -617,6 +620,43 @@ class PlatformService:
         preset = self.get_source_health_policy_version_preset(preset_id)
         preset.is_default = True
         return self.save_source_health_policy_version_preset(preset)
+
+    def export_source_health_policy_version_presets(
+        self,
+        policy_id: str,
+        limit: int = 500,
+    ) -> SourceHealthPolicyVersionPresetExportBundle:
+        self.get_source_health_policy(policy_id)
+        presets = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=limit)
+        return SourceHealthPolicyVersionPresetExportBundle(
+            policy_id=policy_id,
+            exported_at=datetime.now(),
+            presets=presets,
+        )
+
+    def import_source_health_policy_version_presets(
+        self,
+        policy_id: str,
+        request: SourceHealthPolicyVersionPresetImportRequest,
+    ) -> list[SourceHealthPolicyVersionPreset]:
+        self.get_source_health_policy(policy_id)
+        presets = request.presets
+        if not presets:
+            raise ValueError("presets must include at least one entry.")
+        if request.mode == "replace":
+            existing = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
+            for item in existing:
+                self.source_health_policy_version_preset_repo.delete(item.id)
+        imported: list[SourceHealthPolicyVersionPreset] = []
+        force_first_default = request.mode == "replace" and not any(item.is_default for item in presets)
+        for index, item in enumerate(presets):
+            imported_item = self._create_source_health_policy_version_preset_from_import(
+                policy_id=policy_id,
+                item=item,
+                is_default_override=True if force_first_default and index == 0 else None,
+            )
+            imported.append(self.save_source_health_policy_version_preset(imported_item))
+        return imported
 
     def rename_source_health_policy_version_preset(
         self,
@@ -2724,6 +2764,23 @@ class PlatformService:
                 return status_code
         except urlerror.HTTPError as exc:
             raise RuntimeError(f"Notification endpoint returned HTTP {exc.code}") from exc
+
+    def _create_source_health_policy_version_preset_from_import(
+        self,
+        policy_id: str,
+        item: SourceHealthPolicyVersionPresetImportItem,
+        is_default_override: bool | None = None,
+    ) -> SourceHealthPolicyVersionPreset:
+        return SourceHealthPolicyVersionPreset(
+            id=f"source-policy-version-preset-{uuid4().hex[:8]}",
+            policy_id=policy_id,
+            name=item.name,
+            action_filter=item.action_filter,
+            query=item.query,
+            limit=item.limit,
+            is_default=item.is_default if is_default_override is None else bool(is_default_override),
+            owner_scope=item.owner_scope,
+        )
 
 
 def _observations_to_series(rows: list[Observation], freq: str) -> pd.Series:

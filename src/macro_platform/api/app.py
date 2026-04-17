@@ -19,6 +19,7 @@ from macro_platform.domain.models import (
     ScreenSpec,
     SourceHealthPolicy,
     SourceHealthPolicyVersionPreset,
+    SourceHealthPolicyVersionPresetImportRequest,
     Watchlist,
 )
 from macro_platform.services.platform import PlatformService
@@ -256,6 +257,27 @@ def rename_source_health_policy_version_preset(preset_id: str, name: str):
         return service.rename_source_health_policy_version_preset(preset_id=preset_id, name=name).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/status/sources/policies/{policy_id}/version-presets/export")
+def export_source_health_policy_version_presets(policy_id: str):
+    try:
+        return service.export_source_health_policy_version_presets(policy_id=policy_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+
+
+@app.post("/api/status/sources/policies/{policy_id}/version-presets/import")
+def import_source_health_policy_version_presets(policy_id: str, request: SourceHealthPolicyVersionPresetImportRequest):
+    try:
+        return [
+            item.model_dump(mode="json")
+            for item in service.import_source_health_policy_version_presets(policy_id=policy_id, request=request)
+        ]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
