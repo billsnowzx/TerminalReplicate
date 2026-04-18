@@ -2115,6 +2115,12 @@ def test_source_health_policy_version_preset_listing_rejects_invalid_sort_params
     )
     assert invalid_order.status_code == 400
     assert "order must be either 'asc' or 'desc'" in invalid_order.json()["detail"]
+    invalid_offset = client.get(
+        "/api/status/sources/policies/source-policy-preset-sort-invalid-1/version-presets",
+        params={"offset": -1},
+    )
+    assert invalid_offset.status_code == 400
+    assert "offset must be at least 0" in invalid_offset.json()["detail"]
 
 
 def test_source_health_policy_version_preset_listing_supports_query_and_default_filter(client):
@@ -2187,6 +2193,76 @@ def test_source_health_policy_version_preset_listing_supports_query_and_default_
     assert len(only_default.json()) == 1
     assert only_default.json()[0]["is_default"] is True
     assert only_default.json()[0]["id"] == "source-policy-version-preset-filter-a"
+
+
+def test_source_health_policy_version_preset_listing_supports_offset_pagination(client):
+    channel_payload = {
+        "id": "source-policy-preset-offset-drop",
+        "name": "Source Policy Preset Offset Drop",
+        "kind": "file",
+        "target": "source-policy-preset-offset",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-offset-1",
+        "name": "Source Policy Preset Offset",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-offset-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    presets = [
+        {
+            "id": "source-policy-version-preset-offset-a",
+            "policy_id": "source-policy-preset-offset-1",
+            "name": "Preset A",
+            "action_filter": None,
+            "query": None,
+            "limit": 10,
+            "is_default": True,
+            "owner_scope": "shared",
+        },
+        {
+            "id": "source-policy-version-preset-offset-b",
+            "policy_id": "source-policy-preset-offset-1",
+            "name": "Preset B",
+            "action_filter": None,
+            "query": None,
+            "limit": 10,
+            "is_default": False,
+            "owner_scope": "shared",
+        },
+        {
+            "id": "source-policy-version-preset-offset-c",
+            "policy_id": "source-policy-preset-offset-1",
+            "name": "Preset C",
+            "action_filter": None,
+            "query": None,
+            "limit": 10,
+            "is_default": False,
+            "owner_scope": "shared",
+        },
+    ]
+    for payload in presets:
+        assert client.post("/api/status/sources/policies/version-presets", json=payload).status_code == 200
+    page = client.get(
+        "/api/status/sources/policies/source-policy-preset-offset-1/version-presets",
+        params={"sort_by": "name", "order": "asc", "offset": 1, "limit": 1},
+    )
+    assert page.status_code == 200
+    rows = page.json()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Preset B"
 
 
 def test_source_health_policy_version_preset_rejects_duplicate_names_per_policy(client):

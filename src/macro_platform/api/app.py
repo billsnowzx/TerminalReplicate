@@ -197,6 +197,7 @@ def list_source_health_policy_versions(policy_id: str, limit: int = 50, action: 
 def list_source_health_policy_version_presets(
     policy_id: str,
     limit: int = 50,
+    offset: int = 0,
     sort_by: str = "name",
     order: str = "asc",
     query: str | None = None,
@@ -208,6 +209,7 @@ def list_source_health_policy_version_presets(
             for item in service.list_source_health_policy_version_presets(
                 policy_id=policy_id,
                 limit=limit,
+                offset=offset,
                 sort_by=sort_by,
                 order=order,
                 query=query,

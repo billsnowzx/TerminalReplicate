@@ -448,6 +448,24 @@ elif view == "Data Quality":
                     index=0,
                     key=f"source_policy_version_preset_order_{state_key}",
                 )
+            preset_page_left, preset_page_right = st.columns(2)
+            with preset_page_left:
+                preset_limit = st.number_input(
+                    "Preset page size",
+                    min_value=1,
+                    max_value=200,
+                    value=50,
+                    step=10,
+                    key=f"source_policy_version_preset_limit_{state_key}",
+                )
+            with preset_page_right:
+                preset_offset = st.number_input(
+                    "Preset offset",
+                    min_value=0,
+                    value=0,
+                    step=10,
+                    key=f"source_policy_version_preset_offset_{state_key}",
+                )
             preset_filter_left, preset_filter_right = st.columns(2)
             with preset_filter_left:
                 preset_search_query = st.text_input(
@@ -464,7 +482,8 @@ elif view == "Data Quality":
                 )
             version_presets = service.list_source_health_policy_version_presets(
                 editing_policy.id,
-                limit=50,
+                limit=int(preset_limit),
+                offset=int(preset_offset),
                 sort_by=preset_sort_by,
                 order=preset_sort_order,
                 query=preset_search_query or None,

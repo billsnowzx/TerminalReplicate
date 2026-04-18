@@ -558,6 +558,7 @@ class PlatformService:
         self,
         policy_id: str,
         limit: int = 50,
+        offset: int = 0,
         sort_by: str = "name",
         order: str = "asc",
         query: str | None = None,
@@ -566,6 +567,8 @@ class PlatformService:
         self.get_source_health_policy(policy_id)
         if limit < 1:
             raise ValueError("limit must be at least 1.")
+        if offset < 0:
+            raise ValueError("offset must be at least 0.")
         if order not in {"asc", "desc"}:
             raise ValueError("order must be either 'asc' or 'desc'.")
         sort_key_map = {
@@ -595,7 +598,7 @@ class PlatformService:
                     or needle in (item.query or "").lower()
                 ]
         rows = sorted(rows, key=key_fn, reverse=order == "desc")
-        return rows[:limit]
+        return rows[offset : offset + limit]
 
     def list_source_health_policy_versions_by_preset(
         self,
