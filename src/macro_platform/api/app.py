@@ -293,6 +293,14 @@ def import_source_health_policy_version_presets(policy_id: str, request: SourceH
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/status/sources/policies/{policy_id}/version-presets/import/preview")
+def preview_source_health_policy_version_presets_import(policy_id: str, request: SourceHealthPolicyVersionPresetImportRequest):
+    try:
+        return service.preview_source_health_policy_version_presets_import(policy_id=policy_id, request=request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+
+
 @app.get("/api/status/sources/policies/versions/{version_id}")
 def get_source_health_policy_version(version_id: str):
     try:

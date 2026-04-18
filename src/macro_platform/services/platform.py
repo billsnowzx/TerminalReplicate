@@ -671,7 +671,12 @@ class PlatformService:
         presets = request.presets
         if not presets:
             raise ValueError("presets must include at least one entry.")
-        self._validate_source_health_policy_version_preset_import_names(policy_id=policy_id, request=request)
+        preview = self.preview_source_health_policy_version_presets_import(policy_id=policy_id, request=request)
+        if not bool(preview.get("valid", False)):
+            errors = preview.get("errors", [])
+            if errors:
+                raise ValueError("; ".join(str(item) for item in errors))
+            raise ValueError("preset import is invalid.")
         existing = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
         existing_default_id = next((item.id for item in existing if item.is_default), None)
         if request.mode == "replace":
@@ -708,6 +713,76 @@ class PlatformService:
             preferred_preset_id=preferred_default_id,
         )
         return [self.get_source_health_policy_version_preset(item.id) for item in imported]
+
+    def preview_source_health_policy_version_presets_import(
+        self,
+        policy_id: str,
+        request: SourceHealthPolicyVersionPresetImportRequest,
+    ) -> dict[str, object]:
+        self.get_source_health_policy(policy_id)
+        existing = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
+        existing_by_name = {
+            item.name.strip().lower(): item
+            for item in existing
+        }
+        names = [item.name.strip() for item in request.presets]
+        normalized_names = [item.lower() for item in names]
+        errors: list[str] = []
+        if not request.presets:
+            errors.append("presets must include at least one entry.")
+        if any(not item for item in names):
+            errors.append("import preset names must be non-empty.")
+        duplicate_names = sorted({name for name in normalized_names if normalized_names.count(name) > 1})
+        if duplicate_names:
+            errors.append("import contains duplicate preset names: " + ", ".join(duplicate_names))
+        actions: list[dict[str, object]] = []
+        create_count = 0
+        update_count = 0
+        conflict_count = 0
+        for item in request.presets:
+            clean_name = item.name.strip()
+            normalized = clean_name.lower()
+            match = existing_by_name.get(normalized)
+            action = "create"
+            if request.mode == "replace":
+                action = "create"
+            elif request.mode == "upsert":
+                action = "update" if match is not None else "create"
+            elif request.mode == "append":
+                if match is not None:
+                    action = "conflict"
+                    conflict_count += 1
+                    errors.append(f"preset names already exist for this policy: {normalized}")
+                else:
+                    action = "create"
+            if action == "create":
+                create_count += 1
+            if action == "update":
+                update_count += 1
+            actions.append(
+                {
+                    "name": clean_name,
+                    "action": action,
+                    "existing_preset_id": match.id if match is not None else None,
+                    "incoming_is_default": bool(item.is_default),
+                    "incoming_limit": int(item.limit),
+                }
+            )
+        replaced_count = len(existing) if request.mode == "replace" else 0
+        unique_errors = sorted(set(errors))
+        return {
+            "policy_id": policy_id,
+            "mode": request.mode,
+            "valid": len(unique_errors) == 0,
+            "existing_count": len(existing),
+            "incoming_count": len(request.presets),
+            "replaced_count": replaced_count,
+            "create_count": create_count,
+            "update_count": update_count,
+            "conflict_count": conflict_count,
+            "errors": unique_errors,
+            "actions": actions,
+        }
 
     def rename_source_health_policy_version_preset(
         self,

@@ -2169,6 +2169,67 @@ def test_source_health_policy_version_preset_upsert_preserves_single_default_whe
     assert defaults[0]["id"] == "source-policy-version-preset-upsert-default-1"
 
 
+def test_source_health_policy_version_preset_import_preview_reports_conflicts_without_writes(client):
+    channel_payload = {
+        "id": "source-policy-preview-drop",
+        "name": "Source Policy Preview Drop",
+        "kind": "file",
+        "target": "source-policy-preview",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preview-1",
+        "name": "Source Policy Preview",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preview-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    existing = {
+        "id": "source-policy-version-preset-preview-existing",
+        "policy_id": "source-policy-preview-1",
+        "name": "Existing Preset",
+        "action_filter": "update",
+        "query": "old",
+        "limit": 10,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=existing).status_code == 200
+    preview = client.post(
+        "/api/status/sources/policies/source-policy-preview-1/version-presets/import/preview",
+        json={
+            "mode": "append",
+            "presets": [
+                {"name": "existing preset", "action_filter": "archive", "query": "new", "limit": 8},
+                {"name": "New Preset", "action_filter": None, "query": None, "limit": 12},
+            ],
+        },
+    )
+    assert preview.status_code == 200
+    payload = preview.json()
+    assert payload["valid"] is False
+    assert payload["conflict_count"] == 1
+    assert payload["create_count"] == 1
+    assert any("already exist for this policy" in item for item in payload["errors"])
+    assert any(item["action"] == "conflict" for item in payload["actions"])
+    assert any(item["action"] == "create" for item in payload["actions"])
+    rows = client.get("/api/status/sources/policies/source-policy-preview-1/version-presets")
+    assert rows.status_code == 200
+    assert len(rows.json()) == 1
+    assert rows.json()[0]["name"] == "Existing Preset"
+
+
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     channel_payload = {
         "id": "source-policy-clone-drop",

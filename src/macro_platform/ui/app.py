@@ -593,6 +593,28 @@ elif view == "Data Quality":
                     index=0,
                     key=f"source_policy_import_version_preset_mode_{state_key}",
                 )
+                import_preview_key = f"source_policy_import_version_preset_preview_{state_key}"
+                if import_preview_key not in st.session_state:
+                    st.session_state[import_preview_key] = None
+                if st.button("Preview preset bundle import", key=f"source_policy_preview_import_version_preset_{state_key}"):
+                    try:
+                        payload = json.loads(bundle_json)
+                        preset_rows: list[dict[str, object]]
+                        if isinstance(payload, dict) and isinstance(payload.get("presets"), list):
+                            preset_rows = payload["presets"]
+                        elif isinstance(payload, list):
+                            preset_rows = payload
+                        else:
+                            raise ValueError("Preset bundle must be a JSON object with 'presets' or a JSON list.")
+                        import_request = SourceHealthPolicyVersionPresetImportRequest.model_validate(
+                            {"mode": import_mode, "presets": preset_rows}
+                        )
+                        st.session_state[import_preview_key] = service.preview_source_health_policy_version_presets_import(
+                            policy_id=editing_policy.id,
+                            request=import_request,
+                        )
+                    except Exception as exc:
+                        st.session_state[import_preview_key] = {"valid": False, "errors": [str(exc)], "actions": []}
                 if st.button("Import preset bundle", key=f"source_policy_import_version_preset_{state_key}"):
                     try:
                         payload = json.loads(bundle_json)
@@ -614,9 +636,28 @@ elif view == "Data Quality":
                         st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
                             editing_policy.id
                         ).model_dump_json(indent=2)
+                        st.session_state[import_preview_key] = None
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Import failed: {exc}")
+                import_preview = st.session_state.get(import_preview_key)
+                if isinstance(import_preview, dict):
+                    if bool(import_preview.get("valid", False)):
+                        st.success(
+                            f"Import preview valid: create={import_preview.get('create_count', 0)}, "
+                            f"update={import_preview.get('update_count', 0)}, "
+                            f"conflict={import_preview.get('conflict_count', 0)}"
+                        )
+                    else:
+                        st.warning("Import preview invalid.")
+                    preview_errors = import_preview.get("errors", [])
+                    if preview_errors:
+                        for item in preview_errors:
+                            st.error(str(item))
+                    preview_actions = import_preview.get("actions", [])
+                    if preview_actions:
+                        st.caption("Import preview actions")
+                        st.dataframe(pd.DataFrame(preview_actions), use_container_width=True)
             preview_rows = st.session_state.get(preview_key, [])
             if preview_rows:
                 st.caption("Preset preview result")
