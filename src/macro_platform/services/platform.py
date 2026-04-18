@@ -14,7 +14,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from macro_platform.analytics.core import classify_regime, drawdown, screen_assets, year_over_year, yield_curve_slope
-from macro_platform.catalog.tracked_universe import DEFAULT_DASHBOARDS, MARKET_UNIVERSE, TRACKED_SERIES
+from macro_platform.catalog.tracked_universe import (
+    DEFAULT_DASHBOARDS,
+    MARKET_UNIVERSE,
+    TRACKED_SERIES,
+    validate_series_definitions,
+)
 from macro_platform.config import settings
 from macro_platform.domain.models import (
     AssetPrice,
@@ -97,6 +102,7 @@ from macro_platform.storage.repositories import (
 class PlatformService:
     def __init__(self, database_url: str | None = None) -> None:
         self.series_map = {item.id: item for item in TRACKED_SERIES}
+        validate_series_definitions(list(self.series_map.values()))
         self.market_universe = {item["ticker"]: item["asset_class"] for item in MARKET_UNIVERSE}
         self.fred = FREDProvider()
         self.bls = BLSProvider()

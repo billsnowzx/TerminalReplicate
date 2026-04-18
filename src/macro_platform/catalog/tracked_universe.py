@@ -364,3 +364,27 @@ DEFAULT_DASHBOARDS: list[DashboardConfig] = [
         ],
     ),
 ]
+
+
+def validate_series_definitions(series: list[SeriesDefinition]) -> None:
+    allowed_sources = {"fred", "bls", "ecb", "world_bank", "imf", "oecd"}
+    ids_seen: set[str] = set()
+    for item in series:
+        if item.id in ids_seen:
+            raise ValueError(f"Duplicate series id detected: {item.id}")
+        ids_seen.add(item.id)
+        if item.source not in allowed_sources:
+            raise ValueError(
+                f"Unsupported source '{item.source}' for series {item.id}. "
+                "Allowed sources: fred, bls, ecb, world_bank, imf, oecd."
+            )
+        if item.source == "world_bank" and not item.provider_params.get("country_code"):
+            raise ValueError(f"world_bank series {item.id} requires provider_params.country_code")
+        if item.source == "imf" and not item.provider_params.get("country_code"):
+            raise ValueError(f"imf series {item.id} requires provider_params.country_code")
+        if item.source == "oecd":
+            endpoint = item.provider_params.get("endpoint")
+            if not endpoint:
+                raise ValueError(f"oecd series {item.id} requires provider_params.endpoint")
+            if not str(endpoint).startswith("http"):
+                raise ValueError(f"oecd series {item.id} endpoint must be an absolute http(s) URL")
