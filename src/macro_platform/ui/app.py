@@ -448,11 +448,27 @@ elif view == "Data Quality":
                     index=0,
                     key=f"source_policy_version_preset_order_{state_key}",
                 )
+            preset_filter_left, preset_filter_right = st.columns(2)
+            with preset_filter_left:
+                preset_search_query = st.text_input(
+                    "Preset search",
+                    value="",
+                    placeholder="Name, action, or query text",
+                    key=f"source_policy_version_preset_query_{state_key}",
+                )
+            with preset_filter_right:
+                preset_only_default = st.checkbox(
+                    "Only default preset",
+                    value=False,
+                    key=f"source_policy_version_preset_only_default_{state_key}",
+                )
             version_presets = service.list_source_health_policy_version_presets(
                 editing_policy.id,
                 limit=50,
                 sort_by=preset_sort_by,
                 order=preset_sort_order,
+                query=preset_search_query or None,
+                only_default=bool(preset_only_default),
             )
             preset_options = ["Custom"] + [item.id for item in version_presets]
             default_preset = next((item for item in version_presets if item.is_default), None)

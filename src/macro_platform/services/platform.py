@@ -560,6 +560,8 @@ class PlatformService:
         limit: int = 50,
         sort_by: str = "name",
         order: str = "asc",
+        query: str | None = None,
+        only_default: bool = False,
     ) -> list[SourceHealthPolicyVersionPreset]:
         self.get_source_health_policy(policy_id)
         if limit < 1:
@@ -580,6 +582,18 @@ class PlatformService:
                 "sort_by must be one of: name, usage_count, last_used_at, updated_at, created_at, is_default."
             )
         rows = self.source_health_policy_version_preset_repo.list_saved(policy_id=policy_id, limit=1000)
+        if only_default:
+            rows = [item for item in rows if item.is_default]
+        if query is not None:
+            needle = query.strip().lower()
+            if needle:
+                rows = [
+                    item
+                    for item in rows
+                    if needle in item.name.lower()
+                    or needle in (item.action_filter or "").lower()
+                    or needle in (item.query or "").lower()
+                ]
         rows = sorted(rows, key=key_fn, reverse=order == "desc")
         return rows[:limit]
 

@@ -199,6 +199,8 @@ def list_source_health_policy_version_presets(
     limit: int = 50,
     sort_by: str = "name",
     order: str = "asc",
+    query: str | None = None,
+    only_default: bool = False,
 ):
     try:
         return [
@@ -208,6 +210,8 @@ def list_source_health_policy_version_presets(
                 limit=limit,
                 sort_by=sort_by,
                 order=order,
+                query=query,
+                only_default=only_default,
             )
         ]
     except KeyError as exc:

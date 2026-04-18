@@ -2117,6 +2117,78 @@ def test_source_health_policy_version_preset_listing_rejects_invalid_sort_params
     assert "order must be either 'asc' or 'desc'" in invalid_order.json()["detail"]
 
 
+def test_source_health_policy_version_preset_listing_supports_query_and_default_filter(client):
+    channel_payload = {
+        "id": "source-policy-preset-filter-drop",
+        "name": "Source Policy Preset Filter Drop",
+        "kind": "file",
+        "target": "source-policy-preset-filter",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-filter-1",
+        "name": "Source Policy Preset Filter",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-filter-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    preset_a = {
+        "id": "source-policy-version-preset-filter-a",
+        "policy_id": "source-policy-preset-filter-1",
+        "name": "Alpha Policy View",
+        "action_filter": "update",
+        "query": "trigger_on_stale",
+        "limit": 15,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    preset_b = {
+        "id": "source-policy-version-preset-filter-b",
+        "policy_id": "source-policy-preset-filter-1",
+        "name": "Beta Backup",
+        "action_filter": "archive",
+        "query": "holiday",
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_a).status_code == 200
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_b).status_code == 200
+    query_by_name = client.get(
+        "/api/status/sources/policies/source-policy-preset-filter-1/version-presets",
+        params={"query": "alpha"},
+    )
+    assert query_by_name.status_code == 200
+    assert len(query_by_name.json()) == 1
+    assert query_by_name.json()[0]["id"] == "source-policy-version-preset-filter-a"
+    query_by_action = client.get(
+        "/api/status/sources/policies/source-policy-preset-filter-1/version-presets",
+        params={"query": "archive"},
+    )
+    assert query_by_action.status_code == 200
+    assert len(query_by_action.json()) == 1
+    assert query_by_action.json()[0]["id"] == "source-policy-version-preset-filter-b"
+    only_default = client.get(
+        "/api/status/sources/policies/source-policy-preset-filter-1/version-presets",
+        params={"only_default": "true"},
+    )
+    assert only_default.status_code == 200
+    assert len(only_default.json()) == 1
+    assert only_default.json()[0]["is_default"] is True
+    assert only_default.json()[0]["id"] == "source-policy-version-preset-filter-a"
+
+
 def test_source_health_policy_version_preset_rejects_duplicate_names_per_policy(client):
     channel_payload = {
         "id": "source-policy-preset-dup-drop",
