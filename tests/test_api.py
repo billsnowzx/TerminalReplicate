@@ -55,6 +55,19 @@ def test_series_search_includes_imf_and_oecd_catalog_entries(client):
     assert any(item["id"] == "oecd:US:LRUN64TT" for item in response_oecd.json())
 
 
+def test_series_source_registry_endpoint_returns_source_coverage(client):
+    response = client.get("/api/series/sources")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) > 0
+    by_source = {item["source"]: item for item in payload}
+    for source in ["fred", "world_bank", "imf", "oecd", "bls", "ecb"]:
+        assert source in by_source
+        assert by_source[source]["series_count"] >= 1
+        assert "countries" in by_source[source]
+        assert "topics" in by_source[source]
+
+
 def test_prices_endpoint_returns_demo_data(client):
     response = client.get("/api/prices/SPY")
     assert response.status_code == 200

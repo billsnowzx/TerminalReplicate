@@ -168,6 +168,46 @@ class PlatformService:
     def get_series(self, series_id: str) -> SeriesDefinition:
         return self.series_map[series_id]
 
+    def get_series_source_registry(self) -> list[dict[str, object]]:
+        required_params = {
+            "world_bank": ["country_code"],
+            "imf": ["country_code"],
+            "oecd": ["endpoint"],
+        }
+        grouped: dict[str, dict[str, object]] = {}
+        for item in self.series_map.values():
+            row = grouped.setdefault(
+                item.source,
+                {
+                    "source": item.source,
+                    "series_count": 0,
+                    "countries": set(),
+                    "topics": set(),
+                    "missing_required_params": 0,
+                },
+            )
+            row["series_count"] = int(row["series_count"]) + 1
+            row["countries"].add(item.country)
+            row["topics"].add(item.topic)
+            required = required_params.get(item.source, [])
+            if required and any(not item.provider_params.get(key) for key in required):
+                row["missing_required_params"] = int(row["missing_required_params"]) + 1
+        rows: list[dict[str, object]] = []
+        for source in sorted(grouped):
+            current = grouped[source]
+            rows.append(
+                {
+                    "source": current["source"],
+                    "series_count": int(current["series_count"]),
+                    "country_count": len(current["countries"]),
+                    "topic_count": len(current["topics"]),
+                    "countries": sorted(current["countries"]),
+                    "topics": sorted(current["topics"]),
+                    "missing_required_params": int(current["missing_required_params"]),
+                }
+            )
+        return rows
+
     def query_observations(self, query: ObservationQuery) -> list[Observation]:
         definition = self.get_series(query.series_id)
         cached_rows = self.observation_repo.get_range(query.series_id, query.start_date, query.end_date)

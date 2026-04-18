@@ -63,6 +63,11 @@ def search_series(
     return [item.model_dump(mode="json") for item in service.search_series(q, domain, country, frequency)]
 
 
+@app.get("/api/series/sources")
+def list_series_sources():
+    return service.get_series_source_registry()
+
+
 @app.get("/api/series/{series_id:path}")
 def get_series(series_id: str):
     try:

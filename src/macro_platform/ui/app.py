@@ -151,6 +151,9 @@ elif view == "Data Quality":
         ]
     )
     st.dataframe(rows, use_container_width=True)
+    with st.expander("Series Source Registry", expanded=False):
+        registry = pd.DataFrame(service.get_series_source_registry())
+        st.dataframe(registry, use_container_width=True)
     all_sources = service.list_source_health(limit=500)
     left, right = st.columns(2)
     with left:
