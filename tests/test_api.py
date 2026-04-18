@@ -2299,6 +2299,77 @@ def test_source_health_policy_version_preset_import_invalid_fields_are_blocked_w
     assert rows.json()[0]["name"] == "Seed Preset"
 
 
+def test_source_health_policy_version_preset_import_rolls_back_on_runtime_failure(client):
+    channel_payload = {
+        "id": "source-policy-import-rollback-drop",
+        "name": "Source Policy Import Rollback Drop",
+        "kind": "file",
+        "target": "source-policy-import-rollback",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-import-rollback-1",
+        "name": "Source Policy Import Rollback",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-import-rollback-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    seed = {
+        "id": "source-policy-version-preset-import-rollback-seed",
+        "policy_id": "source-policy-import-rollback-1",
+        "name": "Seed Preset",
+        "action_filter": "update",
+        "query": "seed",
+        "limit": 10,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=seed).status_code == 200
+    original_save = api_module.service.save_source_health_policy_version_preset
+    call_count = {"value": 0}
+
+    def flaky_save(preset):
+        call_count["value"] += 1
+        if call_count["value"] == 2:
+            raise ValueError("simulated import failure")
+        return original_save(preset)
+
+    api_module.service.save_source_health_policy_version_preset = flaky_save
+    try:
+        failed = client.post(
+            "/api/status/sources/policies/source-policy-import-rollback-1/version-presets/import",
+            json={
+                "mode": "replace",
+                "presets": [
+                    {"name": "New A", "action_filter": "archive", "query": "a", "limit": 8, "is_default": True},
+                    {"name": "New B", "action_filter": "update", "query": "b", "limit": 7, "is_default": False},
+                ],
+            },
+        )
+    finally:
+        api_module.service.save_source_health_policy_version_preset = original_save
+    assert failed.status_code == 400
+    assert "simulated import failure" in failed.json()["detail"]
+    rows = client.get("/api/status/sources/policies/source-policy-import-rollback-1/version-presets")
+    assert rows.status_code == 200
+    payload = rows.json()
+    assert len(payload) == 1
+    assert payload[0]["id"] == "source-policy-version-preset-import-rollback-seed"
+    assert payload[0]["name"] == "Seed Preset"
+    assert payload[0]["is_default"] is True
+
+
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     channel_payload = {
         "id": "source-policy-clone-drop",

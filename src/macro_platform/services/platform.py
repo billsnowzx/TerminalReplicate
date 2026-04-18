@@ -678,41 +678,46 @@ class PlatformService:
                 raise ValueError("; ".join(str(item) for item in errors))
             raise ValueError("preset import is invalid.")
         existing = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
+        snapshot = [item.model_copy(deep=True) for item in existing]
         existing_default_id = next((item.id for item in existing if item.is_default), None)
-        if request.mode == "replace":
-            for item in existing:
-                self.source_health_policy_version_preset_repo.delete(item.id)
-        imported: list[SourceHealthPolicyVersionPreset] = []
-        force_first_default = request.mode == "replace" and not any(item.is_default for item in presets)
-        existing_by_name = {item.name.strip().lower(): item for item in existing}
-        for index, item in enumerate(presets):
-            match = existing_by_name.get(item.name.strip().lower()) if request.mode == "upsert" else None
-            if match is not None:
-                imported_item = SourceHealthPolicyVersionPreset(
-                    id=match.id,
-                    policy_id=policy_id,
-                    name=item.name,
-                    action_filter=item.action_filter,
-                    query=item.query,
-                    limit=item.limit,
-                    is_default=item.is_default,
-                    owner_scope=item.owner_scope,
-                )
-            else:
-                imported_item = self._create_source_health_policy_version_preset_from_import(
-                    policy_id=policy_id,
-                    item=item,
-                    is_default_override=True if force_first_default and index == 0 else None,
-                )
-            imported.append(self.save_source_health_policy_version_preset(imported_item))
-        preferred_default_id = existing_default_id
-        if preferred_default_id is None and imported:
-            preferred_default_id = imported[0].id
-        self._ensure_source_health_policy_version_preset_default(
-            policy_id=policy_id,
-            preferred_preset_id=preferred_default_id,
-        )
-        return [self.get_source_health_policy_version_preset(item.id) for item in imported]
+        try:
+            if request.mode == "replace":
+                for item in existing:
+                    self.source_health_policy_version_preset_repo.delete(item.id)
+            imported: list[SourceHealthPolicyVersionPreset] = []
+            force_first_default = request.mode == "replace" and not any(item.is_default for item in presets)
+            existing_by_name = {item.name.strip().lower(): item for item in existing}
+            for index, item in enumerate(presets):
+                match = existing_by_name.get(item.name.strip().lower()) if request.mode == "upsert" else None
+                if match is not None:
+                    imported_item = SourceHealthPolicyVersionPreset(
+                        id=match.id,
+                        policy_id=policy_id,
+                        name=item.name,
+                        action_filter=item.action_filter,
+                        query=item.query,
+                        limit=item.limit,
+                        is_default=item.is_default,
+                        owner_scope=item.owner_scope,
+                    )
+                else:
+                    imported_item = self._create_source_health_policy_version_preset_from_import(
+                        policy_id=policy_id,
+                        item=item,
+                        is_default_override=True if force_first_default and index == 0 else None,
+                    )
+                imported.append(self.save_source_health_policy_version_preset(imported_item))
+            preferred_default_id = existing_default_id
+            if preferred_default_id is None and imported:
+                preferred_default_id = imported[0].id
+            self._ensure_source_health_policy_version_preset_default(
+                policy_id=policy_id,
+                preferred_preset_id=preferred_default_id,
+            )
+            return [self.get_source_health_policy_version_preset(item.id) for item in imported]
+        except Exception:
+            self._restore_source_health_policy_version_preset_snapshot(policy_id=policy_id, snapshot=snapshot)
+            raise
 
     def preview_source_health_policy_version_presets_import(
         self,
@@ -877,6 +882,22 @@ class PlatformService:
             if item.is_default != desired_default:
                 item.is_default = desired_default
                 self.source_health_policy_version_preset_repo.save(item)
+
+    def _restore_source_health_policy_version_preset_snapshot(
+        self,
+        policy_id: str,
+        snapshot: list[SourceHealthPolicyVersionPreset],
+    ) -> None:
+        current = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
+        for item in current:
+            self.source_health_policy_version_preset_repo.delete(item.id)
+        for item in snapshot:
+            self.source_health_policy_version_preset_repo.save(item.model_copy(deep=True))
+        preferred_default_id = next((item.id for item in snapshot if item.is_default), None)
+        self._ensure_source_health_policy_version_preset_default(
+            policy_id=policy_id,
+            preferred_preset_id=preferred_default_id,
+        )
 
     def get_source_health_policy_version(self, version_id: str) -> SourceHealthPolicyVersion:
         version = self.source_health_policy_version_repo.get(version_id)
