@@ -2025,6 +2025,57 @@ def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     assert defaults[0]["id"] == "source-policy-version-preset-clone-source"
 
 
+def test_source_health_policy_version_preset_clone_auto_names_are_unique(client):
+    channel_payload = {
+        "id": "source-policy-clone-auto-drop",
+        "name": "Source Policy Clone Auto Drop",
+        "kind": "file",
+        "target": "source-policy-clone-auto",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-clone-auto-1",
+        "name": "Source Policy Clone Auto",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-clone-auto-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    preset_payload = {
+        "id": "source-policy-version-preset-clone-auto-source",
+        "policy_id": "source-policy-clone-auto-1",
+        "name": "Base preset",
+        "action_filter": "update",
+        "query": "name",
+        "limit": 10,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_payload).status_code == 200
+    clone_one = client.post(
+        "/api/status/sources/policies/version-presets/source-policy-version-preset-clone-auto-source/clone",
+    )
+    clone_two = client.post(
+        "/api/status/sources/policies/version-presets/source-policy-version-preset-clone-auto-source/clone",
+    )
+    assert clone_one.status_code == 200
+    assert clone_two.status_code == 200
+    rows = client.get("/api/status/sources/policies/source-policy-clone-auto-1/version-presets")
+    assert rows.status_code == 200
+    names = sorted(item["name"] for item in rows.json())
+    assert names == ["Base preset", "Base preset copy", "Base preset copy 2"]
+
+
 def test_source_health_policy_version_preset_rename_updates_name_and_validates_non_empty(client):
     channel_payload = {
         "id": "source-policy-rename-drop",

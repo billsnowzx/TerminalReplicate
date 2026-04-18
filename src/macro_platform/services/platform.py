@@ -627,7 +627,13 @@ class PlatformService:
         preset = self.get_source_health_policy_version_preset(preset_id)
         clone = preset.model_copy(deep=True)
         clone.id = f"source-policy-version-preset-{uuid4().hex[:8]}"
-        clone.name = (name or f"{preset.name} copy").strip()
+        if name is None:
+            clone.name = self._next_available_source_health_policy_version_preset_name(
+                policy_id=preset.policy_id,
+                base_name=f"{preset.name} copy",
+            )
+        else:
+            clone.name = name.strip()
         clone.is_default = False
         if not clone.name:
             raise ValueError("name must be non-empty.")
@@ -723,6 +729,27 @@ class PlatformService:
             raise ValueError(
                 "preset names already exist for this policy: " + ", ".join(conflicts)
             )
+
+    def _next_available_source_health_policy_version_preset_name(
+        self,
+        policy_id: str,
+        base_name: str,
+    ) -> str:
+        seed = base_name.strip()
+        if not seed:
+            raise ValueError("base_name must be non-empty.")
+        existing = {
+            item.name.strip().lower()
+            for item in self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
+        }
+        if seed.lower() not in existing:
+            return seed
+        index = 2
+        while True:
+            candidate = f"{seed} {index}"
+            if candidate.lower() not in existing:
+                return candidate
+            index += 1
 
     def get_source_health_policy_version(self, version_id: str) -> SourceHealthPolicyVersion:
         version = self.source_health_policy_version_repo.get(version_id)
