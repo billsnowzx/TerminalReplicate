@@ -1,6 +1,6 @@
 import pytest
 import shutil
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from macro_platform.api import app as api_module
+from macro_platform.domain.models import Observation
 from macro_platform.services.platform import PlatformService
 from macro_platform.services.report_scheduler import ReportScheduler
 
@@ -45,6 +46,15 @@ def test_series_search_finds_us_inflation(client):
     assert any(item["id"] == "fred:CPIAUCSL" for item in payload)
 
 
+def test_series_search_includes_imf_and_oecd_catalog_entries(client):
+    response_imf = client.get("/api/series/search", params={"q": "imf"})
+    response_oecd = client.get("/api/series/search", params={"q": "oecd"})
+    assert response_imf.status_code == 200
+    assert response_oecd.status_code == 200
+    assert any(item["id"] == "imf:US:NGDP_RPCH" for item in response_imf.json())
+    assert any(item["id"] == "oecd:US:LRUN64TT" for item in response_oecd.json())
+
+
 def test_prices_endpoint_returns_demo_data(client):
     response = client.get("/api/prices/SPY")
     assert response.status_code == 200
@@ -78,6 +88,66 @@ def test_observation_query_persists_rows(client):
     )
     assert response.status_code == 200
     assert api_module.service.observation_repo.count_rows("fred:CPIAUCSL") > 0
+
+
+def test_observation_query_uses_imf_provider_path(client):
+    called = {"value": False}
+    original = api_module.service.imf.fetch_observations
+
+    def fake_fetch(definition, start_date, end_date):
+        called["value"] = True
+        return [
+            Observation(
+                series_id=definition.id,
+                date=date(2024, 12, 31),
+                value=2.5,
+                status="final",
+            )
+        ]
+
+    api_module.service.imf.fetch_observations = fake_fetch
+    try:
+        response = client.post(
+            "/api/observations/query",
+            json={"series_id": "imf:US:NGDP_RPCH", "start_date": "2020-01-01", "end_date": "2025-12-31"},
+        )
+    finally:
+        api_module.service.imf.fetch_observations = original
+    assert response.status_code == 200
+    assert called["value"] is True
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["series_id"] == "imf:US:NGDP_RPCH"
+
+
+def test_observation_query_uses_oecd_provider_path(client):
+    called = {"value": False}
+    original = api_module.service.oecd.fetch_observations
+
+    def fake_fetch(definition, start_date, end_date):
+        called["value"] = True
+        return [
+            Observation(
+                series_id=definition.id,
+                date=date(2024, 12, 31),
+                value=4.1,
+                status="final",
+            )
+        ]
+
+    api_module.service.oecd.fetch_observations = fake_fetch
+    try:
+        response = client.post(
+            "/api/observations/query",
+            json={"series_id": "oecd:US:LRUN64TT", "start_date": "2020-01-01", "end_date": "2025-12-31"},
+        )
+    finally:
+        api_module.service.oecd.fetch_observations = original
+    assert response.status_code == 200
+    assert called["value"] is True
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["series_id"] == "oecd:US:LRUN64TT"
 
 
 def test_watchlist_persistence_round_trip(client):

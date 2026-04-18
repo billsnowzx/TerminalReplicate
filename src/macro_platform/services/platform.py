@@ -59,6 +59,8 @@ from macro_platform.providers.adapters import (
     DemoMarketProvider,
     ECBProvider,
     FREDProvider,
+    IMFProvider,
+    OECDProvider,
     OpenBBMarketProvider,
     WorldBankProvider,
     write_raw_snapshot,
@@ -99,6 +101,8 @@ class PlatformService:
         self.fred = FREDProvider()
         self.bls = BLSProvider()
         self.ecb = ECBProvider()
+        self.imf = IMFProvider()
+        self.oecd = OECDProvider()
         self.world_bank = WorldBankProvider()
         self.demo_macro = DemoMacroProvider()
         self.demo_market = DemoMarketProvider()
@@ -170,6 +174,10 @@ class PlatformService:
                 rows = self.bls.fetch_observations(definition, query.start_date, query.end_date)
             elif definition.source == "ecb":
                 rows = self.ecb.fetch_observations(definition, query.start_date, query.end_date)
+            elif definition.source == "imf":
+                rows = self.imf.fetch_observations(definition, query.start_date, query.end_date)
+            elif definition.source == "oecd":
+                rows = self.oecd.fetch_observations(definition, query.start_date, query.end_date)
             elif definition.source == "world_bank":
                 rows = self.world_bank.fetch_observations(definition, query.start_date, query.end_date)
             else:

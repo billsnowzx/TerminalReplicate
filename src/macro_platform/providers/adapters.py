@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 import hashlib
+import io
 
 import pandas as pd
 import requests
@@ -143,6 +144,48 @@ class ECBProvider:
         )
         response.raise_for_status()
         return _parse_ecb_observations(definition, response.json(), start_date, end_date)
+
+
+class IMFProvider:
+    base_url = "https://www.imf.org/external/datamapper/api/v1"
+
+    def __init__(self) -> None:
+        self.session = requests.Session()
+
+    def fetch_observations(
+        self,
+        definition: SeriesDefinition,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[Observation]:
+        country_code = definition.provider_params.get("country_code")
+        if not country_code:
+            raise ValueError("IMF provider requires provider_params.country_code.")
+        response = self.session.get(
+            f"{self.base_url}/{definition.source_key}/{country_code}",
+            timeout=12,
+        )
+        response.raise_for_status()
+        return _parse_imf_observations(definition, response.json(), start_date, end_date)
+
+
+class OECDProvider:
+    def __init__(self) -> None:
+        self.session = requests.Session()
+
+    def fetch_observations(
+        self,
+        definition: SeriesDefinition,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[Observation]:
+        endpoint = definition.provider_params.get("endpoint")
+        if not endpoint:
+            raise ValueError("OECD provider requires provider_params.endpoint.")
+        response = self.session.get(endpoint, timeout=12)
+        response.raise_for_status()
+        frame = pd.read_csv(io.StringIO(response.text))
+        return _parse_oecd_observations(definition, frame, start_date, end_date)
 
 
 class OpenBBMarketProvider:
@@ -324,6 +367,79 @@ def _parse_ecb_observations(
                 series_id=definition.id,
                 date=current_date,
                 value=float(values[0]),
+                status="final",
+            )
+        )
+    return list(sorted(rows, key=lambda row: row.date))
+
+
+def _parse_imf_observations(
+    definition: SeriesDefinition,
+    payload: dict,
+    start_date: date | None,
+    end_date: date | None,
+) -> list[Observation]:
+    values = payload.get("values", {}).get(definition.source_key, {})
+    country_code = definition.provider_params.get("country_code")
+    country_values = values.get(country_code, {}) if isinstance(values, dict) else {}
+    rows: list[Observation] = []
+    for year_text, raw_value in country_values.items():
+        try:
+            year = int(year_text)
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        current_date = date(year, 12, 31)
+        if start_date and current_date < start_date:
+            continue
+        if end_date and current_date > end_date:
+            continue
+        rows.append(
+            Observation(
+                series_id=definition.id,
+                date=current_date,
+                value=value,
+                status="final",
+            )
+        )
+    return list(sorted(rows, key=lambda row: row.date))
+
+
+def _parse_oecd_observations(
+    definition: SeriesDefinition,
+    frame: pd.DataFrame,
+    start_date: date | None,
+    end_date: date | None,
+) -> list[Observation]:
+    if frame.empty:
+        return []
+    date_column = "TIME_PERIOD" if "TIME_PERIOD" in frame.columns else "time"
+    value_column = "OBS_VALUE" if "OBS_VALUE" in frame.columns else "value"
+    if date_column not in frame.columns or value_column not in frame.columns:
+        raise ValueError("OECD payload must include TIME_PERIOD/time and OBS_VALUE/value columns.")
+    rows: list[Observation] = []
+    for _, item in frame.iterrows():
+        raw_date = str(item[date_column])
+        if len(raw_date) == 4 and raw_date.isdigit():
+            current_date = date(int(raw_date), 12, 31)
+        else:
+            parsed = pd.to_datetime(raw_date, errors="coerce")
+            if pd.isna(parsed):
+                continue
+            current_date = parsed.date()
+        try:
+            value = float(item[value_column])
+        except (TypeError, ValueError):
+            continue
+        if start_date and current_date < start_date:
+            continue
+        if end_date and current_date > end_date:
+            continue
+        rows.append(
+            Observation(
+                series_id=definition.id,
+                date=current_date,
+                value=value,
                 status="final",
             )
         )
