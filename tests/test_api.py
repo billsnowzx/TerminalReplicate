@@ -2230,6 +2230,75 @@ def test_source_health_policy_version_preset_import_preview_reports_conflicts_wi
     assert rows.json()[0]["name"] == "Existing Preset"
 
 
+def test_source_health_policy_version_preset_import_invalid_fields_are_blocked_without_partial_writes(client):
+    channel_payload = {
+        "id": "source-policy-preview-invalid-drop",
+        "name": "Source Policy Preview Invalid Drop",
+        "kind": "file",
+        "target": "source-policy-preview-invalid",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preview-invalid-1",
+        "name": "Source Policy Preview Invalid",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preview-invalid-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    seed_preset = {
+        "id": "source-policy-version-preset-preview-invalid-seed",
+        "policy_id": "source-policy-preview-invalid-1",
+        "name": "Seed Preset",
+        "action_filter": "update",
+        "query": "seed",
+        "limit": 10,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=seed_preset).status_code == 200
+    preview = client.post(
+        "/api/status/sources/policies/source-policy-preview-invalid-1/version-presets/import/preview",
+        json={
+            "mode": "append",
+            "presets": [
+                {"name": "New Valid", "action_filter": "archive", "query": "ok", "limit": 8},
+                {"name": "Broken Preset", "action_filter": "bad_action", "query": "bad", "limit": 0},
+            ],
+        },
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.json()
+    assert preview_payload["valid"] is False
+    assert any("limit must be at least 1" in item for item in preview_payload["errors"])
+    assert any("action_filter must be one of" in item for item in preview_payload["errors"])
+    failed_import = client.post(
+        "/api/status/sources/policies/source-policy-preview-invalid-1/version-presets/import",
+        json={
+            "mode": "append",
+            "presets": [
+                {"name": "New Valid", "action_filter": "archive", "query": "ok", "limit": 8},
+                {"name": "Broken Preset", "action_filter": "bad_action", "query": "bad", "limit": 0},
+            ],
+        },
+    )
+    assert failed_import.status_code == 400
+    rows = client.get("/api/status/sources/policies/source-policy-preview-invalid-1/version-presets")
+    assert rows.status_code == 200
+    assert len(rows.json()) == 1
+    assert rows.json()[0]["name"] == "Seed Preset"
+
+
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     channel_payload = {
         "id": "source-policy-clone-drop",

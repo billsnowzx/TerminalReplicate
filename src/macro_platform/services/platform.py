@@ -742,6 +742,21 @@ class PlatformService:
         for item in request.presets:
             clean_name = item.name.strip()
             normalized = clean_name.lower()
+            if item.limit < 1:
+                errors.append(
+                    f"preset '{clean_name or '<blank>'}' limit must be at least 1."
+                )
+            if item.action_filter is not None and item.action_filter not in {
+                "create",
+                "update",
+                "archive",
+                "restore",
+                "rollback",
+            }:
+                errors.append(
+                    f"preset '{clean_name or '<blank>'}' action_filter must be one of: "
+                    "create, update, archive, restore, rollback."
+                )
             match = existing_by_name.get(normalized)
             action = "create"
             if request.mode == "replace":
@@ -763,6 +778,11 @@ class PlatformService:
                 {
                     "name": clean_name,
                     "action": action,
+                    "valid": item.limit >= 1
+                    and (
+                        item.action_filter is None
+                        or item.action_filter in {"create", "update", "archive", "restore", "rollback"}
+                    ),
                     "existing_preset_id": match.id if match is not None else None,
                     "incoming_is_default": bool(item.is_default),
                     "incoming_limit": int(item.limit),
@@ -806,31 +826,6 @@ class PlatformService:
                 continue
             if item.name.strip().lower() == normalized:
                 raise ValueError(f"preset name '{name.strip()}' already exists for this policy.")
-
-    def _validate_source_health_policy_version_preset_import_names(
-        self,
-        policy_id: str,
-        request: SourceHealthPolicyVersionPresetImportRequest,
-    ) -> None:
-        normalized_names = [item.name.strip().lower() for item in request.presets]
-        if any(not name for name in normalized_names):
-            raise ValueError("import preset names must be non-empty.")
-        duplicate_names = sorted({name for name in normalized_names if normalized_names.count(name) > 1})
-        if duplicate_names:
-            raise ValueError(
-                "import contains duplicate preset names: " + ", ".join(sorted(duplicate_names))
-            )
-        if request.mode in {"replace", "upsert"}:
-            return
-        existing_names = {
-            item.name.strip().lower()
-            for item in self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
-        }
-        conflicts = sorted(set(normalized_names) & existing_names)
-        if conflicts:
-            raise ValueError(
-                "preset names already exist for this policy: " + ", ".join(conflicts)
-            )
 
     def _next_available_source_health_policy_version_preset_name(
         self,
