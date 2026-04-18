@@ -1948,6 +1948,7 @@ def test_source_health_policy_version_preset_timestamps_are_recorded_and_created
     assert first["created_at"] is not None
     assert first["updated_at"] is not None
     assert first["last_used_at"] is None
+    assert first["usage_count"] == 0
     updated = client.post(
         "/api/status/sources/policies/version-presets",
         json={**preset_payload, "query": "field-updated"},
@@ -1957,6 +1958,7 @@ def test_source_health_policy_version_preset_timestamps_are_recorded_and_created
     assert second["created_at"] == first["created_at"]
     assert second["updated_at"] is not None
     assert second["last_used_at"] is None
+    assert second["usage_count"] == 0
 
 
 def test_source_health_policy_version_preset_versions_endpoint_applies_filters(client):
@@ -2006,6 +2008,12 @@ def test_source_health_policy_version_preset_versions_endpoint_applies_filters(c
     fetched = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-versions-1")
     assert fetched.status_code == 200
     assert fetched.json()["last_used_at"] is not None
+    assert fetched.json()["usage_count"] == 1
+    second_run = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-versions-1/versions")
+    assert second_run.status_code == 200
+    fetched_again = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-versions-1")
+    assert fetched_again.status_code == 200
+    assert fetched_again.json()["usage_count"] == 2
 
 
 def test_source_health_policy_version_preset_rejects_duplicate_names_per_policy(client):
@@ -2109,6 +2117,7 @@ def test_source_health_policy_version_preset_import_upsert_updates_and_creates(c
         "owner_scope": "shared",
     }
     assert client.post("/api/status/sources/policies/version-presets", json=original).status_code == 200
+    assert client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-upsert-original/versions").status_code == 200
     upsert = client.post(
         "/api/status/sources/policies/source-policy-upsert-1/version-presets/import",
         json={
@@ -2142,6 +2151,7 @@ def test_source_health_policy_version_preset_import_upsert_updates_and_creates(c
     assert updated_match["query"] == "updated"
     assert updated_match["limit"] == 7
     assert updated_match["is_default"] is True
+    assert updated_match["usage_count"] == 1
     rows = client.get("/api/status/sources/policies/source-policy-upsert-1/version-presets")
     assert rows.status_code == 200
     row_payload = rows.json()
@@ -2472,6 +2482,7 @@ def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     assert clone_row["name"] == "Cloned preset"
     assert clone_row["id"] != "source-policy-version-preset-clone-source"
     assert clone_row["is_default"] is False
+    assert clone_row["usage_count"] == 0
     rows = client.get("/api/status/sources/policies/source-policy-clone-1/version-presets")
     assert rows.status_code == 200
     names = sorted(item["name"] for item in rows.json())

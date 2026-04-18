@@ -447,7 +447,7 @@ elif view == "Data Quality":
                 preset_options,
                 format_func=lambda x: "Custom filters" if x == "Custom" else next(
                     f"{item.name}{' [default]' if item.is_default else ''} "
-                    f"(action={item.action_filter or 'all'}, query={item.query or 'blank'})"
+                    f"(action={item.action_filter or 'all'}, query={item.query or 'blank'}, used={item.usage_count})"
                     for item in version_presets
                     if item.id == x
                 ),
@@ -526,7 +526,8 @@ elif view == "Data Quality":
                         "Preset timestamps: "
                         f"created={selected_preset.created_at or 'n/a'}, "
                         f"updated={selected_preset.updated_at or 'n/a'}, "
-                        f"last_used={selected_preset.last_used_at or 'never'}"
+                        f"last_used={selected_preset.last_used_at or 'never'}, "
+                        f"usage_count={selected_preset.usage_count}"
                     )
                     rename_name = st.text_input(
                         "Rename selected preset",

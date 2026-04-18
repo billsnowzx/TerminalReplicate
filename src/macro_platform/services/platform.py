@@ -593,9 +593,12 @@ class PlatformService:
                 preset.created_at = existing.created_at
             if preset.last_used_at is None:
                 preset.last_used_at = existing.last_used_at
+            preset.usage_count = existing.usage_count
         now = datetime.now()
         if preset.created_at is None:
             preset.created_at = now
+        if preset.usage_count < 0:
+            raise ValueError("usage_count must be at least 0.")
         preset.updated_at = now
         if preset.limit < 1:
             raise ValueError("limit must be at least 1.")
@@ -655,6 +658,7 @@ class PlatformService:
         clone.created_at = None
         clone.updated_at = None
         clone.last_used_at = None
+        clone.usage_count = 0
         if not clone.name:
             raise ValueError("name must be non-empty.")
         return self.save_source_health_policy_version_preset(clone)
@@ -675,6 +679,7 @@ class PlatformService:
             touched.created_at = now
         touched.updated_at = now
         touched.last_used_at = now
+        touched.usage_count = max(0, int(touched.usage_count)) + 1
         self.source_health_policy_version_preset_repo.save(touched)
         return touched
 
@@ -731,6 +736,7 @@ class PlatformService:
                         created_at=match.created_at,
                         updated_at=match.updated_at,
                         last_used_at=match.last_used_at,
+                        usage_count=match.usage_count,
                     )
                 else:
                     imported_item = self._create_source_health_policy_version_preset_from_import(

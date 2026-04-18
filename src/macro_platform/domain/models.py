@@ -186,6 +186,7 @@ class SourceHealthPolicyVersionPreset(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     last_used_at: datetime | None = None
+    usage_count: int = 0
 
 
 class SourceHealthPolicyVersionPresetImportItem(BaseModel):
