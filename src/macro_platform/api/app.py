@@ -194,14 +194,26 @@ def list_source_health_policy_versions(policy_id: str, limit: int = 50, action: 
 
 
 @app.get("/api/status/sources/policies/{policy_id}/version-presets")
-def list_source_health_policy_version_presets(policy_id: str, limit: int = 50):
+def list_source_health_policy_version_presets(
+    policy_id: str,
+    limit: int = 50,
+    sort_by: str = "name",
+    order: str = "asc",
+):
     try:
         return [
             item.model_dump(mode="json")
-            for item in service.list_source_health_policy_version_presets(policy_id=policy_id, limit=limit)
+            for item in service.list_source_health_policy_version_presets(
+                policy_id=policy_id,
+                limit=limit,
+                sort_by=sort_by,
+                order=order,
+            )
         ]
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/status/sources/policies/version-presets/{preset_id}")

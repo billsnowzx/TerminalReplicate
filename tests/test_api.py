@@ -2016,6 +2016,107 @@ def test_source_health_policy_version_preset_versions_endpoint_applies_filters(c
     assert fetched_again.json()["usage_count"] == 2
 
 
+def test_source_health_policy_version_preset_listing_supports_usage_sorting(client):
+    channel_payload = {
+        "id": "source-policy-preset-sort-drop",
+        "name": "Source Policy Preset Sort Drop",
+        "kind": "file",
+        "target": "source-policy-preset-sort",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-sort-1",
+        "name": "Source Policy Preset Sort",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-sort-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    first = {
+        "id": "source-policy-version-preset-sort-a",
+        "policy_id": "source-policy-preset-sort-1",
+        "name": "Preset A",
+        "action_filter": None,
+        "query": None,
+        "limit": 10,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    second = {
+        "id": "source-policy-version-preset-sort-b",
+        "policy_id": "source-policy-preset-sort-1",
+        "name": "Preset B",
+        "action_filter": None,
+        "query": None,
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=first).status_code == 200
+    assert client.post("/api/status/sources/policies/version-presets", json=second).status_code == 200
+    assert client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-sort-b/versions").status_code == 200
+    assert client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-sort-b/versions").status_code == 200
+    listing = client.get(
+        "/api/status/sources/policies/source-policy-preset-sort-1/version-presets",
+        params={"sort_by": "usage_count", "order": "desc"},
+    )
+    assert listing.status_code == 200
+    payload = listing.json()
+    assert len(payload) == 2
+    assert payload[0]["id"] == "source-policy-version-preset-sort-b"
+    assert payload[0]["usage_count"] >= payload[1]["usage_count"]
+
+
+def test_source_health_policy_version_preset_listing_rejects_invalid_sort_params(client):
+    channel_payload = {
+        "id": "source-policy-preset-sort-invalid-drop",
+        "name": "Source Policy Preset Sort Invalid Drop",
+        "kind": "file",
+        "target": "source-policy-preset-sort-invalid",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-sort-invalid-1",
+        "name": "Source Policy Preset Sort Invalid",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-sort-invalid-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    invalid_sort = client.get(
+        "/api/status/sources/policies/source-policy-preset-sort-invalid-1/version-presets",
+        params={"sort_by": "bad_field"},
+    )
+    assert invalid_sort.status_code == 400
+    assert "sort_by must be one of" in invalid_sort.json()["detail"]
+    invalid_order = client.get(
+        "/api/status/sources/policies/source-policy-preset-sort-invalid-1/version-presets",
+        params={"order": "upward"},
+    )
+    assert invalid_order.status_code == 400
+    assert "order must be either 'asc' or 'desc'" in invalid_order.json()["detail"]
+
+
 def test_source_health_policy_version_preset_rejects_duplicate_names_per_policy(client):
     channel_payload = {
         "id": "source-policy-preset-dup-drop",

@@ -558,9 +558,30 @@ class PlatformService:
         self,
         policy_id: str,
         limit: int = 50,
+        sort_by: str = "name",
+        order: str = "asc",
     ) -> list[SourceHealthPolicyVersionPreset]:
         self.get_source_health_policy(policy_id)
-        return self.source_health_policy_version_preset_repo.list_saved(policy_id=policy_id, limit=limit)
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        if order not in {"asc", "desc"}:
+            raise ValueError("order must be either 'asc' or 'desc'.")
+        sort_key_map = {
+            "name": lambda item: item.name.lower(),
+            "usage_count": lambda item: int(item.usage_count),
+            "last_used_at": lambda item: item.last_used_at or datetime.min,
+            "updated_at": lambda item: item.updated_at or datetime.min,
+            "created_at": lambda item: item.created_at or datetime.min,
+            "is_default": lambda item: 1 if item.is_default else 0,
+        }
+        key_fn = sort_key_map.get(sort_by)
+        if key_fn is None:
+            raise ValueError(
+                "sort_by must be one of: name, usage_count, last_used_at, updated_at, created_at, is_default."
+            )
+        rows = self.source_health_policy_version_preset_repo.list_saved(policy_id=policy_id, limit=1000)
+        rows = sorted(rows, key=key_fn, reverse=order == "desc")
+        return rows[:limit]
 
     def list_source_health_policy_versions_by_preset(
         self,

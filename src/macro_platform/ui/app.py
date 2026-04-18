@@ -433,7 +433,27 @@ elif view == "Data Quality":
                     if st.button("Restore policy", key=f"source_policy_restore_button_{state_key}"):
                         updated = service.restore_source_health_policy(editing_policy.id)
                         st.success(f"Restored policy: {updated.name}")
-            version_presets = service.list_source_health_policy_version_presets(editing_policy.id, limit=50)
+            preset_sort_left, preset_sort_right = st.columns(2)
+            with preset_sort_left:
+                preset_sort_by = st.selectbox(
+                    "Preset sort by",
+                    ["name", "usage_count", "last_used_at", "updated_at", "created_at", "is_default"],
+                    index=0,
+                    key=f"source_policy_version_preset_sort_{state_key}",
+                )
+            with preset_sort_right:
+                preset_sort_order = st.selectbox(
+                    "Preset order",
+                    ["asc", "desc"],
+                    index=0,
+                    key=f"source_policy_version_preset_order_{state_key}",
+                )
+            version_presets = service.list_source_health_policy_version_presets(
+                editing_policy.id,
+                limit=50,
+                sort_by=preset_sort_by,
+                order=preset_sort_order,
+            )
             preset_options = ["Custom"] + [item.id for item in version_presets]
             default_preset = next((item for item in version_presets if item.is_default), None)
             preset_select_key = f"source_policy_version_preset_select_{state_key}"
