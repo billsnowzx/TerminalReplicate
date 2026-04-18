@@ -1970,6 +1970,86 @@ def test_source_health_policy_version_preset_rejects_duplicate_names_per_policy(
     assert "already exist for this policy" in imported.json()["detail"]
 
 
+def test_source_health_policy_version_preset_import_upsert_updates_and_creates(client):
+    channel_payload = {
+        "id": "source-policy-upsert-drop",
+        "name": "Source Policy Upsert Drop",
+        "kind": "file",
+        "target": "source-policy-upsert",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-upsert-1",
+        "name": "Source Policy Upsert",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-upsert-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    original = {
+        "id": "source-policy-version-preset-upsert-original",
+        "policy_id": "source-policy-upsert-1",
+        "name": "Core filter",
+        "action_filter": "update",
+        "query": "old",
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=original).status_code == 200
+    upsert = client.post(
+        "/api/status/sources/policies/source-policy-upsert-1/version-presets/import",
+        json={
+            "mode": "upsert",
+            "presets": [
+                {
+                    "name": " core FILTER ",
+                    "action_filter": "archive",
+                    "query": "updated",
+                    "limit": 7,
+                    "is_default": True,
+                    "owner_scope": "shared",
+                },
+                {
+                    "name": "Fresh upsert preset",
+                    "action_filter": None,
+                    "query": None,
+                    "limit": 20,
+                    "is_default": False,
+                    "owner_scope": "shared",
+                },
+            ],
+        },
+    )
+    assert upsert.status_code == 200
+    payload = upsert.json()
+    assert len(payload) == 2
+    updated_match = next(item for item in payload if item["name"] == "core FILTER")
+    assert updated_match["id"] == "source-policy-version-preset-upsert-original"
+    assert updated_match["action_filter"] == "archive"
+    assert updated_match["query"] == "updated"
+    assert updated_match["limit"] == 7
+    assert updated_match["is_default"] is True
+    rows = client.get("/api/status/sources/policies/source-policy-upsert-1/version-presets")
+    assert rows.status_code == 200
+    row_payload = rows.json()
+    assert len(row_payload) == 2
+    defaults = [item for item in row_payload if item.get("is_default")]
+    assert len(defaults) == 1
+    assert defaults[0]["id"] == "source-policy-version-preset-upsert-original"
+    assert any(item["name"] == "Fresh upsert preset" for item in row_payload)
+
+
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):
     channel_payload = {
         "id": "source-policy-clone-drop",

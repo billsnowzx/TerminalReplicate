@@ -589,7 +589,7 @@ elif view == "Data Quality":
                 )
                 import_mode = st.selectbox(
                     "Import mode",
-                    ["append", "replace"],
+                    ["append", "upsert", "replace"],
                     index=0,
                     key=f"source_policy_import_version_preset_mode_{state_key}",
                 )

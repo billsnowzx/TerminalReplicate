@@ -195,7 +195,7 @@ class SourceHealthPolicyVersionPresetImportItem(BaseModel):
 
 
 class SourceHealthPolicyVersionPresetImportRequest(BaseModel):
-    mode: Literal["append", "replace"] = "append"
+    mode: Literal["append", "replace", "upsert"] = "append"
     presets: list[SourceHealthPolicyVersionPresetImportItem] = Field(default_factory=list)
 
 
