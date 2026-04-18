@@ -154,6 +154,38 @@ elif view == "Data Quality":
     with st.expander("Series Source Registry", expanded=False):
         registry = pd.DataFrame(service.get_series_source_registry())
         st.dataframe(registry, use_container_width=True)
+        source_values = sorted(registry["source"].tolist()) if not registry.empty else []
+        if source_values:
+            drill_source = st.selectbox("Drill-down source", source_values, key="registry_drill_source")
+            source_rows = service.list_series_by_source(drill_source, limit=1000)
+            country_values = sorted({item.country for item in source_rows})
+            topic_values = sorted({item.topic for item in source_rows})
+            country_filter = st.selectbox(
+                "Drill-down country",
+                ["all"] + country_values,
+                key="registry_drill_country",
+            )
+            topic_filter = st.selectbox(
+                "Drill-down topic",
+                ["all"] + topic_values,
+                key="registry_drill_topic",
+            )
+            drill_limit = st.slider("Drill-down row limit", min_value=10, max_value=500, value=100, step=10)
+            drilldown = pd.DataFrame(
+                [
+                    item.model_dump(mode="json")
+                    for item in service.list_series_by_source(
+                        source=drill_source,
+                        country=None if country_filter == "all" else country_filter,
+                        topic=None if topic_filter == "all" else topic_filter,
+                        limit=drill_limit,
+                    )
+                ]
+            )
+            st.caption("Series by source")
+            st.dataframe(drilldown, use_container_width=True)
+        else:
+            st.info("No source registry rows available yet.")
     all_sources = service.list_source_health(limit=500)
     left, right = st.columns(2)
     with left:

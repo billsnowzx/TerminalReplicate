@@ -68,6 +68,29 @@ def list_series_sources():
     return service.get_series_source_registry()
 
 
+@app.get("/api/series/sources/{source}/series")
+def list_series_by_source(
+    source: str,
+    country: str | None = None,
+    topic: str | None = None,
+    limit: int = Query(default=200, ge=1, le=2000),
+):
+    try:
+        return [
+            item.model_dump(mode="json")
+            for item in service.list_series_by_source(
+                source=source,
+                country=country,
+                topic=topic,
+                limit=limit,
+            )
+        ]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Series source not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/series/{series_id:path}")
 def get_series(series_id: str):
     try:

@@ -68,6 +68,27 @@ def test_series_source_registry_endpoint_returns_source_coverage(client):
         assert "topics" in by_source[source]
 
 
+def test_series_source_drilldown_endpoint_filters_country_topic_and_limit(client):
+    response = client.get(
+        "/api/series/sources/imf/series",
+        params={"country": "US", "topic": "growth", "limit": 5},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) >= 1
+    assert len(payload) <= 5
+    assert all(item["source"] == "imf" for item in payload)
+    assert all(item["country"] == "US" for item in payload)
+    assert all(item["topic"] == "growth" for item in payload)
+    assert any(item["id"] == "imf:US:NGDP_RPCH" for item in payload)
+
+
+def test_series_source_drilldown_endpoint_returns_404_for_unknown_source(client):
+    response = client.get("/api/series/sources/not_a_source/series")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Series source not found."
+
+
 def test_prices_endpoint_returns_demo_data(client):
     response = client.get("/api/prices/SPY")
     assert response.status_code == 200

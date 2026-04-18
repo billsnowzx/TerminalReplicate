@@ -208,6 +208,25 @@ class PlatformService:
             )
         return rows
 
+    def list_series_by_source(
+        self,
+        source: str,
+        country: str | None = None,
+        topic: str | None = None,
+        limit: int = 200,
+    ) -> list[SeriesDefinition]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        rows = [item for item in self.series_map.values() if item.source == source]
+        if not rows:
+            raise KeyError(source)
+        if country:
+            rows = [item for item in rows if item.country.upper() == country.upper()]
+        if topic:
+            rows = [item for item in rows if item.topic == topic]
+        rows = sorted(rows, key=lambda item: item.id)
+        return rows[:limit]
+
     def query_observations(self, query: ObservationQuery) -> list[Observation]:
         definition = self.get_series(query.series_id)
         cached_rows = self.observation_repo.get_range(query.series_id, query.start_date, query.end_date)
