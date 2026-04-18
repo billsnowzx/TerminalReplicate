@@ -566,7 +566,7 @@ class PlatformService:
         self,
         preset_id: str,
     ) -> list[SourceHealthPolicyVersion]:
-        preset = self.get_source_health_policy_version_preset(preset_id)
+        preset = self.touch_source_health_policy_version_preset_usage(preset_id)
         return self.list_source_health_policy_versions(
             policy_id=preset.policy_id,
             limit=int(preset.limit),
@@ -585,6 +585,18 @@ class PlatformService:
         preset: SourceHealthPolicyVersionPreset,
     ) -> SourceHealthPolicyVersionPreset:
         self.get_source_health_policy(preset.policy_id)
+        existing = self.source_health_policy_version_preset_repo.get(preset.id)
+        if existing is not None:
+            if existing.policy_id != preset.policy_id:
+                raise ValueError("Cannot move preset to a different policy.")
+            if preset.created_at is None:
+                preset.created_at = existing.created_at
+            if preset.last_used_at is None:
+                preset.last_used_at = existing.last_used_at
+        now = datetime.now()
+        if preset.created_at is None:
+            preset.created_at = now
+        preset.updated_at = now
         if preset.limit < 1:
             raise ValueError("limit must be at least 1.")
         if preset.action_filter is not None and preset.action_filter not in {"create", "update", "archive", "restore", "rollback"}:
@@ -640,6 +652,9 @@ class PlatformService:
         else:
             clone.name = name.strip()
         clone.is_default = False
+        clone.created_at = None
+        clone.updated_at = None
+        clone.last_used_at = None
         if not clone.name:
             raise ValueError("name must be non-empty.")
         return self.save_source_health_policy_version_preset(clone)
@@ -648,6 +663,20 @@ class PlatformService:
         preset = self.get_source_health_policy_version_preset(preset_id)
         preset.is_default = True
         return self.save_source_health_policy_version_preset(preset)
+
+    def touch_source_health_policy_version_preset_usage(
+        self,
+        preset_id: str,
+    ) -> SourceHealthPolicyVersionPreset:
+        preset = self.get_source_health_policy_version_preset(preset_id)
+        touched = preset.model_copy(deep=True)
+        now = datetime.now()
+        if touched.created_at is None:
+            touched.created_at = now
+        touched.updated_at = now
+        touched.last_used_at = now
+        self.source_health_policy_version_preset_repo.save(touched)
+        return touched
 
     def export_source_health_policy_version_presets(
         self,
@@ -699,6 +728,9 @@ class PlatformService:
                         limit=item.limit,
                         is_default=item.is_default,
                         owner_scope=item.owner_scope,
+                        created_at=match.created_at,
+                        updated_at=match.updated_at,
+                        last_used_at=match.last_used_at,
                     )
                 else:
                     imported_item = self._create_source_health_policy_version_preset_from_import(

@@ -1906,6 +1906,59 @@ def test_source_health_policy_version_preset_auto_assigns_default_when_missing(c
     assert defaults[0]["id"] == "source-policy-version-preset-auto-default-1"
 
 
+def test_source_health_policy_version_preset_timestamps_are_recorded_and_created_at_is_stable(client):
+    channel_payload = {
+        "id": "source-policy-preset-timestamps-drop",
+        "name": "Source Policy Preset Timestamps Drop",
+        "kind": "file",
+        "target": "source-policy-preset-timestamps",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-timestamps-1",
+        "name": "Source Policy Preset Timestamps",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-timestamps-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    preset_payload = {
+        "id": "source-policy-version-preset-timestamps-1",
+        "policy_id": "source-policy-preset-timestamps-1",
+        "name": "Timestamp preset",
+        "action_filter": "update",
+        "query": "field",
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    saved = client.post("/api/status/sources/policies/version-presets", json=preset_payload)
+    assert saved.status_code == 200
+    first = saved.json()
+    assert first["created_at"] is not None
+    assert first["updated_at"] is not None
+    assert first["last_used_at"] is None
+    updated = client.post(
+        "/api/status/sources/policies/version-presets",
+        json={**preset_payload, "query": "field-updated"},
+    )
+    assert updated.status_code == 200
+    second = updated.json()
+    assert second["created_at"] == first["created_at"]
+    assert second["updated_at"] is not None
+    assert second["last_used_at"] is None
+
+
 def test_source_health_policy_version_preset_versions_endpoint_applies_filters(client):
     channel_payload = {
         "id": "source-policy-preset-versions-drop",
@@ -1950,6 +2003,9 @@ def test_source_health_policy_version_preset_versions_endpoint_applies_filters(c
     assert len(payload) == 1
     assert payload[0]["action"] == "update"
     assert "trigger_on_stale" in payload[0]["changed_fields"]
+    fetched = client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-versions-1")
+    assert fetched.status_code == 200
+    assert fetched.json()["last_used_at"] is not None
 
 
 def test_source_health_policy_version_preset_rejects_duplicate_names_per_policy(client):

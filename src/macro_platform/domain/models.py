@@ -183,6 +183,9 @@ class SourceHealthPolicyVersionPreset(BaseModel):
     limit: int = 20
     is_default: bool = False
     owner_scope: Literal["shared", "private"] = "shared"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    last_used_at: datetime | None = None
 
 
 class SourceHealthPolicyVersionPresetImportItem(BaseModel):

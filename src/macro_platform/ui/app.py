@@ -522,6 +522,12 @@ elif view == "Data Quality":
                         st.error(str(exc))
                 if selected_preset is not None:
                     st.caption(f"Selected preset: {selected_preset.name}{' [default]' if selected_preset.is_default else ''}")
+                    st.caption(
+                        "Preset timestamps: "
+                        f"created={selected_preset.created_at or 'n/a'}, "
+                        f"updated={selected_preset.updated_at or 'n/a'}, "
+                        f"last_used={selected_preset.last_used_at or 'never'}"
+                    )
                     rename_name = st.text_input(
                         "Rename selected preset",
                         value=selected_preset.name,
