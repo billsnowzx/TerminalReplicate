@@ -156,6 +156,14 @@ def source_health_summary():
     return service.get_source_health_summary()
 
 
+@app.get("/api/status/sources/alerts")
+def source_health_alerts(limit: int = Query(default=50, ge=1, le=500)):
+    try:
+        return service.get_source_health_alerts(limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/status/sources/{source_id:path}/threshold")
 def set_source_stale_threshold(source_id: str, minutes: int = Query(ge=1)):
     try:

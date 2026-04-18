@@ -46,6 +46,20 @@ def render_timeseries(series_id: str, title: str) -> None:
     st.plotly_chart(figure, use_container_width=True)
 
 
+def render_source_alert_banner(limit: int = 5) -> None:
+    alerts = service.get_source_health_alerts(limit=limit)
+    if not alerts:
+        return
+    high_count = sum(1 for item in alerts if item["severity"] == "high")
+    medium_count = sum(1 for item in alerts if item["severity"] == "medium")
+    low_count = sum(1 for item in alerts if item["severity"] == "low")
+    st.warning(
+        "Source health alerts active: "
+        f"{high_count} high, {medium_count} medium, {low_count} low."
+    )
+    st.dataframe(pd.DataFrame(alerts), use_container_width=True)
+
+
 st.title("Modular Macro Research Platform")
 view = st.sidebar.selectbox(
     "Workspace",
@@ -66,6 +80,7 @@ view = st.sidebar.selectbox(
         "Report Studio",
     ],
 )
+render_source_alert_banner()
 
 if view == "Global Macro Monitor":
     st.subheader("Global Macro Monitor")

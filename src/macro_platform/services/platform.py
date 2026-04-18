@@ -533,6 +533,55 @@ class PlatformService:
             "stale": sum(1 for item in rows if item.is_stale),
         }
 
+    def get_source_health_alerts(self, limit: int = 50) -> list[dict[str, object]]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        rows = self.list_source_health(limit=2000)
+        alerts: list[dict[str, object]] = []
+        severity_rank = {"high": 3, "medium": 2, "low": 1}
+        for item in rows:
+            reasons: list[str] = []
+            if item.status == "down":
+                reasons.append("down")
+            elif item.status == "degraded":
+                reasons.append("degraded")
+            if item.is_stale:
+                reasons.append("stale")
+            if not reasons:
+                continue
+            if "down" in reasons:
+                severity = "high"
+            elif "degraded" in reasons:
+                severity = "medium"
+            else:
+                severity = "low"
+            alerts.append(
+                {
+                    "source_id": item.id,
+                    "source_kind": item.source_kind,
+                    "provider": item.provider,
+                    "status": item.status,
+                    "reasons": reasons,
+                    "severity": severity,
+                    "is_stale": item.is_stale,
+                    "stale_threshold_minutes": item.stale_threshold_minutes,
+                    "consecutive_failures": item.consecutive_failures,
+                    "last_checked_at": item.last_checked_at,
+                    "last_success_at": item.last_success_at,
+                    "last_failure_at": item.last_failure_at,
+                    "fallback_used": item.fallback_used,
+                    "last_error": item.last_error,
+                }
+            )
+        alerts = sorted(
+            alerts,
+            key=lambda item: (
+                -severity_rank[str(item["severity"])],
+                str(item["source_id"]),
+            ),
+        )
+        return alerts[:limit]
+
     def list_source_health_policies(
         self,
         active_only: bool = False,

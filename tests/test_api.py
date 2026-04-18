@@ -89,6 +89,29 @@ def test_series_source_drilldown_endpoint_returns_404_for_unknown_source(client)
     assert response.json()["detail"] == "Series source not found."
 
 
+def test_source_health_alerts_endpoint_returns_degraded_and_stale_entries(client):
+    api_module.service._record_source_health(  # noqa: SLF001
+        source_id="macro:fred",
+        source_kind="macro",
+        provider="fred",
+        status="degraded",
+        last_checked_at=datetime.now(),
+        last_success_at=datetime.now() - timedelta(days=3),
+        last_failure_at=datetime.now(),
+        fallback_used=True,
+        error_message="degraded test",
+    )
+    response = client.get("/api/status/sources/alerts", params={"limit": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) >= 1
+    alert = next(item for item in payload if item["source_id"] == "macro:fred")
+    assert alert["status"] == "degraded"
+    assert "degraded" in alert["reasons"]
+    assert "stale" in alert["reasons"]
+    assert alert["severity"] == "medium"
+
+
 def test_prices_endpoint_returns_demo_data(client):
     response = client.get("/api/prices/SPY")
     assert response.status_code == 200
