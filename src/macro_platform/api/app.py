@@ -222,6 +222,14 @@ def list_source_health_policy_version_presets(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/status/sources/policies/{policy_id}/version-presets/summary")
+def get_source_health_policy_version_preset_summary(policy_id: str):
+    try:
+        return service.get_source_health_policy_version_preset_summary(policy_id=policy_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
+
+
 @app.get("/api/status/sources/policies/version-presets/{preset_id}")
 def get_source_health_policy_version_preset(preset_id: str):
     try:

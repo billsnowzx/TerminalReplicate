@@ -600,6 +600,31 @@ class PlatformService:
         rows = sorted(rows, key=key_fn, reverse=order == "desc")
         return rows[offset : offset + limit]
 
+    def get_source_health_policy_version_preset_summary(self, policy_id: str) -> dict[str, object]:
+        rows = self.list_source_health_policy_version_presets(
+            policy_id=policy_id,
+            limit=1000,
+            offset=0,
+            sort_by="name",
+            order="asc",
+        )
+        default_preset = next((item for item in rows if item.is_default), None)
+        most_used = max(rows, key=lambda item: int(item.usage_count), default=None)
+        used_rows = [item for item in rows if item.last_used_at is not None]
+        last_used = max(used_rows, key=lambda item: item.last_used_at, default=None) if used_rows else None
+        return {
+            "policy_id": policy_id,
+            "total_presets": len(rows),
+            "default_preset_id": default_preset.id if default_preset is not None else None,
+            "default_preset_name": default_preset.name if default_preset is not None else None,
+            "most_used_preset_id": most_used.id if most_used is not None else None,
+            "most_used_preset_name": most_used.name if most_used is not None else None,
+            "most_used_count": int(most_used.usage_count) if most_used is not None else 0,
+            "last_used_preset_id": last_used.id if last_used is not None else None,
+            "last_used_preset_name": last_used.name if last_used is not None else None,
+            "last_used_at": last_used.last_used_at if last_used is not None else None,
+        }
+
     def list_source_health_policy_versions_by_preset(
         self,
         preset_id: str,

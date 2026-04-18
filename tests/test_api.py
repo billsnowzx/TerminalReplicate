@@ -2265,6 +2265,68 @@ def test_source_health_policy_version_preset_listing_supports_offset_pagination(
     assert rows[0]["name"] == "Preset B"
 
 
+def test_source_health_policy_version_preset_summary_endpoint_reports_key_stats(client):
+    channel_payload = {
+        "id": "source-policy-preset-summary-drop",
+        "name": "Source Policy Preset Summary Drop",
+        "kind": "file",
+        "target": "source-policy-preset-summary",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-summary-1",
+        "name": "Source Policy Preset Summary",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-summary-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    preset_a = {
+        "id": "source-policy-version-preset-summary-a",
+        "policy_id": "source-policy-preset-summary-1",
+        "name": "Summary A",
+        "action_filter": "update",
+        "query": "a",
+        "limit": 10,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    preset_b = {
+        "id": "source-policy-version-preset-summary-b",
+        "policy_id": "source-policy-preset-summary-1",
+        "name": "Summary B",
+        "action_filter": "update",
+        "query": "b",
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_a).status_code == 200
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_b).status_code == 200
+    assert client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-summary-b/versions").status_code == 200
+    assert client.get("/api/status/sources/policies/version-presets/source-policy-version-preset-summary-b/versions").status_code == 200
+    summary = client.get("/api/status/sources/policies/source-policy-preset-summary-1/version-presets/summary")
+    assert summary.status_code == 200
+    payload = summary.json()
+    assert payload["policy_id"] == "source-policy-preset-summary-1"
+    assert payload["total_presets"] == 2
+    assert payload["default_preset_id"] == "source-policy-version-preset-summary-a"
+    assert payload["most_used_preset_id"] == "source-policy-version-preset-summary-b"
+    assert payload["most_used_count"] == 2
+    assert payload["last_used_preset_id"] == "source-policy-version-preset-summary-b"
+    assert payload["last_used_at"] is not None
+
+
 def test_source_health_policy_version_preset_rejects_duplicate_names_per_policy(client):
     channel_payload = {
         "id": "source-policy-preset-dup-drop",

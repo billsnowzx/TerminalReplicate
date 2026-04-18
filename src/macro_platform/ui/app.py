@@ -489,6 +489,15 @@ elif view == "Data Quality":
                 query=preset_search_query or None,
                 only_default=bool(preset_only_default),
             )
+            preset_summary = service.get_source_health_policy_version_preset_summary(editing_policy.id)
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("Preset total", int(preset_summary.get("total_presets", 0)))
+            summary_cols[1].metric("Default preset", str(preset_summary.get("default_preset_name") or "-"))
+            summary_cols[2].metric(
+                "Most used",
+                f"{preset_summary.get('most_used_preset_name') or '-'} ({int(preset_summary.get('most_used_count', 0))})",
+            )
+            summary_cols[3].metric("Last used", str(preset_summary.get("last_used_preset_name") or "-"))
             preset_options = ["Custom"] + [item.id for item in version_presets]
             default_preset = next((item for item in version_presets if item.is_default), None)
             preset_select_key = f"source_policy_version_preset_select_{state_key}"
