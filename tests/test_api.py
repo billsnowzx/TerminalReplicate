@@ -1860,6 +1860,52 @@ def test_source_health_policy_version_presets_can_be_saved_and_loaded(client):
     assert remaining.json()[0]["is_default"] is True
 
 
+def test_source_health_policy_version_preset_auto_assigns_default_when_missing(client):
+    channel_payload = {
+        "id": "source-policy-preset-auto-default-drop",
+        "name": "Source Policy Preset Auto Default Drop",
+        "kind": "file",
+        "target": "source-policy-preset-auto-default",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-preset-auto-default-1",
+        "name": "Source Policy Preset Auto Default",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-preset-auto-default-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    preset_payload = {
+        "id": "source-policy-version-preset-auto-default-1",
+        "policy_id": "source-policy-preset-auto-default-1",
+        "name": "Only preset",
+        "action_filter": "update",
+        "query": "field",
+        "limit": 10,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    saved = client.post("/api/status/sources/policies/version-presets", json=preset_payload)
+    assert saved.status_code == 200
+    assert saved.json()["is_default"] is True
+    rows = client.get("/api/status/sources/policies/source-policy-preset-auto-default-1/version-presets")
+    assert rows.status_code == 200
+    defaults = [item for item in rows.json() if item.get("is_default")]
+    assert len(defaults) == 1
+    assert defaults[0]["id"] == "source-policy-version-preset-auto-default-1"
+
+
 def test_source_health_policy_version_preset_versions_endpoint_applies_filters(client):
     channel_payload = {
         "id": "source-policy-preset-versions-drop",
@@ -2048,6 +2094,79 @@ def test_source_health_policy_version_preset_import_upsert_updates_and_creates(c
     assert len(defaults) == 1
     assert defaults[0]["id"] == "source-policy-version-preset-upsert-original"
     assert any(item["name"] == "Fresh upsert preset" for item in row_payload)
+
+
+def test_source_health_policy_version_preset_upsert_preserves_single_default_when_bundle_unsets_it(client):
+    channel_payload = {
+        "id": "source-policy-upsert-default-drop",
+        "name": "Source Policy Upsert Default Drop",
+        "kind": "file",
+        "target": "source-policy-upsert-default",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    policy_payload = {
+        "id": "source-policy-upsert-default-1",
+        "name": "Source Policy Upsert Default",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-upsert-default-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    first = {
+        "id": "source-policy-version-preset-upsert-default-1",
+        "policy_id": "source-policy-upsert-default-1",
+        "name": "Alpha preset",
+        "action_filter": "update",
+        "query": "a",
+        "limit": 10,
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    second = {
+        "id": "source-policy-version-preset-upsert-default-2",
+        "policy_id": "source-policy-upsert-default-1",
+        "name": "Beta preset",
+        "action_filter": None,
+        "query": None,
+        "limit": 20,
+        "is_default": False,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=first).status_code == 200
+    assert client.post("/api/status/sources/policies/version-presets", json=second).status_code == 200
+    upsert = client.post(
+        "/api/status/sources/policies/source-policy-upsert-default-1/version-presets/import",
+        json={
+            "mode": "upsert",
+            "presets": [
+                {
+                    "name": "alpha preset",
+                    "action_filter": "archive",
+                    "query": "updated",
+                    "limit": 9,
+                    "is_default": False,
+                    "owner_scope": "shared",
+                }
+            ],
+        },
+    )
+    assert upsert.status_code == 200
+    rows = client.get("/api/status/sources/policies/source-policy-upsert-default-1/version-presets")
+    assert rows.status_code == 200
+    payload = rows.json()
+    defaults = [item for item in payload if item.get("is_default")]
+    assert len(defaults) == 1
+    assert defaults[0]["id"] == "source-policy-version-preset-upsert-default-1"
 
 
 def test_source_health_policy_version_preset_clone_creates_new_preset(client):

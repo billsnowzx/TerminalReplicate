@@ -607,7 +607,11 @@ class PlatformService:
                 if item.is_default:
                     item.is_default = False
                     self.source_health_policy_version_preset_repo.save(item)
-        return saved
+        self._ensure_source_health_policy_version_preset_default(
+            policy_id=saved.policy_id,
+            preferred_preset_id=saved.id,
+        )
+        return self.get_source_health_policy_version_preset(saved.id)
 
     def delete_source_health_policy_version_preset(self, preset_id: str) -> None:
         deleted = self.get_source_health_policy_version_preset(preset_id)
@@ -618,6 +622,7 @@ class PlatformService:
                 promoted = remaining[0]
                 promoted.is_default = True
                 self.save_source_health_policy_version_preset(promoted)
+        self._ensure_source_health_policy_version_preset_default(policy_id=deleted.policy_id)
 
     def clone_source_health_policy_version_preset(
         self,
@@ -668,6 +673,7 @@ class PlatformService:
             raise ValueError("presets must include at least one entry.")
         self._validate_source_health_policy_version_preset_import_names(policy_id=policy_id, request=request)
         existing = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
+        existing_default_id = next((item.id for item in existing if item.is_default), None)
         if request.mode == "replace":
             for item in existing:
                 self.source_health_policy_version_preset_repo.delete(item.id)
@@ -694,7 +700,14 @@ class PlatformService:
                     is_default_override=True if force_first_default and index == 0 else None,
                 )
             imported.append(self.save_source_health_policy_version_preset(imported_item))
-        return imported
+        preferred_default_id = existing_default_id
+        if preferred_default_id is None and imported:
+            preferred_default_id = imported[0].id
+        self._ensure_source_health_policy_version_preset_default(
+            policy_id=policy_id,
+            preferred_preset_id=preferred_default_id,
+        )
+        return [self.get_source_health_policy_version_preset(item.id) for item in imported]
 
     def rename_source_health_policy_version_preset(
         self,
@@ -764,6 +777,36 @@ class PlatformService:
             if candidate.lower() not in existing:
                 return candidate
             index += 1
+
+    def _ensure_source_health_policy_version_preset_default(
+        self,
+        policy_id: str,
+        preferred_preset_id: str | None = None,
+    ) -> None:
+        rows = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=1000)
+        if not rows:
+            return
+        defaults = [item for item in rows if item.is_default]
+        if len(defaults) == 1:
+            return
+        keep_id: str
+        if defaults:
+            default_ids = {item.id for item in defaults}
+            if preferred_preset_id and preferred_preset_id in default_ids:
+                keep_id = preferred_preset_id
+            else:
+                keep_id = defaults[0].id
+        else:
+            row_ids = {item.id for item in rows}
+            if preferred_preset_id and preferred_preset_id in row_ids:
+                keep_id = preferred_preset_id
+            else:
+                keep_id = rows[0].id
+        for item in rows:
+            desired_default = item.id == keep_id
+            if item.is_default != desired_default:
+                item.is_default = desired_default
+                self.source_health_policy_version_preset_repo.save(item)
 
     def get_source_health_policy_version(self, version_id: str) -> SourceHealthPolicyVersion:
         version = self.source_health_policy_version_repo.get(version_id)
