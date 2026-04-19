@@ -66,6 +66,7 @@ view = st.sidebar.selectbox(
     [
         "Global Macro Monitor",
         "Country Dashboard",
+        "Cross Country Comparison",
         "Cross Asset Monitor",
         "Regime Monitor",
         "Release Calendar",
@@ -106,6 +107,34 @@ elif view == "Country Dashboard":
         "CA": "world_bank:CAN:NY.GDP.MKTP.CD",
     }
     render_timeseries(series_map[country], f"{country} GDP")
+
+elif view == "Cross Country Comparison":
+    st.subheader("Cross Country Comparison")
+    default_countries = ["US", "CN", "EA", "JP", "GB", "CA"]
+    selected_countries = st.multiselect(
+        "Countries",
+        options=default_countries,
+        default=default_countries,
+    )
+    comparison_limit = st.slider("Rows", min_value=3, max_value=20, value=6, step=1)
+    rows = pd.DataFrame(
+        service.get_cross_country_comparison(
+            countries=selected_countries,
+            limit=comparison_limit,
+        )
+    )
+    st.dataframe(rows, use_container_width=True)
+    if not rows.empty:
+        scatter = px.scatter(
+            rows,
+            x="growth",
+            y="inflation",
+            color="composite_score",
+            hover_name="country",
+            size="equity_return_63d",
+            title="Growth vs Inflation with Composite Score",
+        )
+        st.plotly_chart(scatter, use_container_width=True)
 
 elif view == "Cross Asset Monitor":
     st.subheader("Cross Asset Monitor")

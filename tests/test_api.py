@@ -379,6 +379,20 @@ def test_change_monitor_delta_endpoint_returns_trend_rows(client):
     assert "previous_absolute_change" in first
 
 
+def test_cross_country_monitor_endpoint_returns_scored_rows(client):
+    response = client.get(
+        "/api/monitors/cross-country",
+        params={"countries": "US,CN,EA,JP", "limit": 4},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 4
+    assert all("country" in row for row in payload)
+    assert all("composite_score" in row for row in payload)
+    scores = [float(row["composite_score"]) for row in payload]
+    assert scores == sorted(scores, reverse=True)
+
+
 def test_change_monitor_report_section_generation(client):
     template_payload = {
         "id": "change-pack",

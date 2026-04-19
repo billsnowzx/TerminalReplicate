@@ -123,6 +123,17 @@ def country_monitor(country: str):
     return service.get_country_snapshot(country)
 
 
+@app.get("/api/monitors/cross-country")
+def cross_country_monitor(countries: str | None = None, limit: int = Query(default=12, ge=1, le=50)):
+    parsed = None
+    if countries:
+        parsed = [item.strip().upper() for item in countries.split(",") if item.strip()]
+    try:
+        return service.get_cross_country_comparison(countries=parsed, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/markets/monitor")
 def cross_asset_monitor():
     return service.get_cross_asset_monitor()

@@ -413,6 +413,132 @@ class PlatformService:
             )
         return rows
 
+    def get_cross_country_comparison(
+        self,
+        countries: list[str] | None = None,
+        limit: int = 12,
+    ) -> list[dict[str, object]]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        default_countries = ["US", "CN", "EA", "JP", "GB", "CA"]
+        selected = countries or default_countries
+        selected = [item.upper() for item in selected if item]
+        selected = list(dict.fromkeys(selected))
+        selected = selected[:limit]
+
+        growth_series_map = {
+            "US": "imf:US:NGDP_RPCH",
+            "CN": "imf:CN:NGDP_RPCH",
+            "EA": "world_bank:EMU:NY.GDP.MKTP.CD",
+            "JP": "world_bank:JPN:NY.GDP.MKTP.CD",
+            "GB": "world_bank:GBR:NY.GDP.MKTP.CD",
+            "CA": "world_bank:CAN:NY.GDP.MKTP.CD",
+        }
+        inflation_series_map = {
+            "US": "world_bank:USA:FP.CPI.TOTL.ZG",
+            "CN": "world_bank:CHN:FP.CPI.TOTL.ZG",
+            "EA": "world_bank:EMU:FP.CPI.TOTL.ZG",
+        }
+        labor_series_map = {
+            "US": "oecd:US:LRUN64TT",
+            "EA": "oecd:EA:LRUN64TT",
+        }
+        policy_series_map = {
+            "US": "fred:FEDFUNDS",
+            "EA": "ecb:FM/B.U2.EUR.4F.KR.MRR_FR.LEV",
+        }
+        equity_proxy_map = {
+            "US": "SPY",
+            "CN": "MCHI",
+            "EA": "EZU",
+            "JP": "EWJ",
+            "GB": "EWU",
+            "CA": "EWC",
+        }
+
+        rows: list[dict[str, object]] = []
+        for country in selected:
+            growth_value = self._latest_metric_value(growth_series_map.get(country), allow_growth_from_level=True)
+            inflation_value = self._latest_metric_value(inflation_series_map.get(country))
+            labor_value = self._latest_metric_value(labor_series_map.get(country))
+            policy_rate = self._latest_metric_value(policy_series_map.get(country))
+            proxy_ticker = equity_proxy_map.get(country)
+            return_63d = self._market_return_63d(proxy_ticker) if proxy_ticker else None
+            rows.append(
+                {
+                    "country": country,
+                    "growth": growth_value,
+                    "inflation": inflation_value,
+                    "labor_unemployment": labor_value,
+                    "policy_rate": policy_rate,
+                    "equity_proxy": proxy_ticker,
+                    "equity_return_63d": return_63d,
+                }
+            )
+
+        score_fields = [
+            ("growth", 1.0),
+            ("inflation", -1.0),
+            ("labor_unemployment", -1.0),
+            ("policy_rate", -1.0),
+            ("equity_return_63d", 1.0),
+        ]
+        for field, direction in score_fields:
+            values = [row[field] for row in rows if row[field] is not None]
+            mean_value = float(sum(values) / len(values)) if values else 0.0
+            variance = float(sum((value - mean_value) ** 2 for value in values) / len(values)) if values else 0.0
+            std_value = variance ** 0.5
+            for row in rows:
+                value = row[field]
+                score_name = f"score_{field}"
+                if value is None or std_value <= 1e-9:
+                    row[score_name] = 0.0
+                else:
+                    row[score_name] = round(((float(value) - mean_value) / std_value) * direction, 4)
+        for row in rows:
+            components = [
+                float(row["score_growth"]),
+                float(row["score_inflation"]),
+                float(row["score_labor_unemployment"]),
+                float(row["score_policy_rate"]),
+                float(row["score_equity_return_63d"]),
+            ]
+            row["composite_score"] = round(sum(components) / len(components), 4)
+        rows.sort(key=lambda item: float(item["composite_score"]), reverse=True)
+        return rows
+
+    def _latest_metric_value(self, series_id: str | None, allow_growth_from_level: bool = False) -> float | None:
+        if not series_id:
+            return None
+        observations = self.query_observations(
+            ObservationQuery(series_id=series_id, start_date=date.today() - timedelta(days=365 * 10))
+        )
+        valid = [item for item in observations if item.value is not None]
+        if not valid:
+            return None
+        latest = float(valid[-1].value or 0.0)
+        if not allow_growth_from_level:
+            return round(latest, 4)
+        if len(valid) < 2:
+            return round(latest, 4)
+        previous = float(valid[-2].value or 0.0)
+        if abs(previous) <= 1e-9:
+            return round(latest, 4)
+        growth_rate = ((latest - previous) / abs(previous)) * 100
+        return round(growth_rate, 4)
+
+    def _market_return_63d(self, ticker: str | None) -> float | None:
+        if not ticker:
+            return None
+        prices = self.get_prices(ticker, start_date=date.today() - timedelta(days=180))
+        if len(prices) < 64:
+            return None
+        latest = float(prices[-1].close)
+        previous = float(prices[-64].close)
+        if abs(previous) <= 1e-9:
+            return None
+        return round(((latest - previous) / abs(previous)) * 100, 4)
+
     def get_regime_snapshot(self) -> dict[str, float | str]:
         cpi = self.query_observations(
             ObservationQuery(series_id="fred:CPIAUCSL", start_date=date.today() - timedelta(days=365 * 4))
