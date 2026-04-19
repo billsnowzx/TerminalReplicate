@@ -430,6 +430,16 @@ def change_monitor(
     return [item.model_dump(mode="json") for item in service.get_change_monitor(country=country, topic=topic, asset_class=asset_class, limit=limit)]
 
 
+@app.get("/api/monitors/changes/delta")
+def change_monitor_delta(
+    country: str | None = None,
+    topic: str | None = None,
+    asset_class: str | None = None,
+    limit: int = Query(default=25, ge=1, le=500),
+):
+    return service.get_change_monitor_deltas(country=country, topic=topic, asset_class=asset_class, limit=limit)
+
+
 @app.get("/api/alerts/rules")
 def list_change_alert_rules():
     return [item.model_dump(mode="json") for item in service.list_change_alert_rules()]

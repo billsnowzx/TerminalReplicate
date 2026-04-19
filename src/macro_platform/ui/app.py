@@ -898,6 +898,22 @@ elif view == "Change Monitor":
         ]
     )
     st.dataframe(rows, use_container_width=True)
+    delta_rows = pd.DataFrame(
+        service.get_change_monitor_deltas(
+            country=None if country_filter == "All" else country_filter,
+            topic=None if topic_filter == "All" else topic_filter,
+            asset_class=None if asset_filter == "All" else asset_filter,
+            limit=limit,
+        )
+    )
+    if not delta_rows.empty:
+        trend_counts = delta_rows["trend"].value_counts()
+        metric_accel, metric_reverse, metric_decel = st.columns(3)
+        metric_accel.metric("Accelerating", int(trend_counts.get("accelerating", 0)))
+        metric_reverse.metric("Reversing", int(trend_counts.get("reversing", 0)))
+        metric_decel.metric("Decelerating", int(trend_counts.get("decelerating", 0)))
+        st.caption("What Changed Since Prior Signal")
+        st.dataframe(delta_rows, use_container_width=True)
     if not rows.empty:
         scatter = px.scatter(
             rows,

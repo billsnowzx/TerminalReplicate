@@ -367,6 +367,18 @@ def test_change_monitor_endpoint_returns_ranked_signals(client):
     assert any(item["entity_type"] == "series" for item in payload)
 
 
+def test_change_monitor_delta_endpoint_returns_trend_rows(client):
+    response = client.get("/api/monitors/changes/delta", params={"country": "US", "limit": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) > 0
+    first = payload[0]
+    assert first["entity_type"] in {"series", "asset"}
+    assert first["trend"] in {"accelerating", "decelerating", "reversing", "stable"}
+    assert "delta_absolute_change" in first
+    assert "previous_absolute_change" in first
+
+
 def test_change_monitor_report_section_generation(client):
     template_payload = {
         "id": "change-pack",

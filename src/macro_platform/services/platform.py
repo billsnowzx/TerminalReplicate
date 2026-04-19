@@ -1417,6 +1417,41 @@ class PlatformService:
         )
         return rows[:limit]
 
+    def get_change_monitor_deltas(
+        self,
+        country: str | None = None,
+        topic: str | None = None,
+        asset_class: str | None = None,
+        limit: int = 25,
+    ) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for definition in self.series_map.values():
+            if country and definition.country.upper() != country.upper():
+                continue
+            if topic and definition.topic != topic:
+                continue
+            observations = self.query_observations(
+                ObservationQuery(series_id=definition.id, start_date=date.today() - timedelta(days=365 * 3))
+            )
+            delta_row = _build_series_change_delta(definition, observations)
+            if delta_row is not None:
+                rows.append(delta_row)
+        for ticker, ticker_asset_class in self.market_universe.items():
+            if asset_class and ticker_asset_class != asset_class:
+                continue
+            prices = self.get_prices(ticker, start_date=date.today() - timedelta(days=120))
+            delta_row = _build_asset_change_delta(ticker, ticker_asset_class, prices)
+            if delta_row is not None:
+                rows.append(delta_row)
+        rows.sort(
+            key=lambda item: (
+                _significance_rank(str(item["significance"])),
+                abs(float(item["delta_percent_change"])) if item["delta_percent_change"] is not None else abs(float(item["delta_absolute_change"])),
+            ),
+            reverse=True,
+        )
+        return rows[:limit]
+
     def run_screen(self, spec: ScreenSpec) -> list[dict[str, float | str]]:
         universe = spec.universe or list(self.market_universe.keys())
         frames = []
@@ -3471,6 +3506,108 @@ def _build_asset_change_signal(
         significance=significance,
         unit=current.currency or "price",
     )
+
+
+def _build_series_change_delta(
+    definition: SeriesDefinition,
+    observations: list[Observation],
+) -> dict[str, object] | None:
+    valid = [item for item in observations if item.value is not None]
+    if len(valid) < 3:
+        return None
+    older = valid[-3]
+    previous = valid[-2]
+    current = valid[-1]
+    current_value = float(current.value or 0.0)
+    previous_value = float(previous.value or 0.0)
+    older_value = float(older.value or 0.0)
+    current_abs = current_value - previous_value
+    previous_abs = previous_value - older_value
+    current_pct = ((current_abs / abs(previous_value)) * 100) if abs(previous_value) > 1e-9 else None
+    previous_pct = ((previous_abs / abs(older_value)) * 100) if abs(older_value) > 1e-9 else None
+    delta_abs = current_abs - previous_abs
+    delta_pct = None
+    if current_pct is not None and previous_pct is not None:
+        delta_pct = current_pct - previous_pct
+    return {
+        "entity_type": "series",
+        "key": definition.id,
+        "title": definition.title,
+        "topic": definition.topic,
+        "country": definition.country,
+        "asset_class": None,
+        "source": definition.source,
+        "observation_date": current.date,
+        "current_value": round(current_value, 4),
+        "previous_value": round(previous_value, 4),
+        "absolute_change": round(current_abs, 4),
+        "percent_change": round(current_pct, 2) if current_pct is not None else None,
+        "previous_absolute_change": round(previous_abs, 4),
+        "previous_percent_change": round(previous_pct, 2) if previous_pct is not None else None,
+        "delta_absolute_change": round(delta_abs, 4),
+        "delta_percent_change": round(delta_pct, 2) if delta_pct is not None else None,
+        "direction": _direction_for_change(current_abs),
+        "trend": _change_trend(current_abs, previous_abs),
+        "significance": _score_significance(absolute_change=current_abs, percent_change=current_pct, unit=definition.unit),
+        "unit": definition.unit,
+    }
+
+
+def _build_asset_change_delta(
+    ticker: str,
+    asset_class: str,
+    prices: list[AssetPrice],
+) -> dict[str, object] | None:
+    if len(prices) < 3:
+        return None
+    older = prices[-3]
+    previous = prices[-2]
+    current = prices[-1]
+    current_value = float(current.close)
+    previous_value = float(previous.close)
+    older_value = float(older.close)
+    current_abs = current_value - previous_value
+    previous_abs = previous_value - older_value
+    current_pct = ((current_abs / abs(previous_value)) * 100) if abs(previous_value) > 1e-9 else None
+    previous_pct = ((previous_abs / abs(older_value)) * 100) if abs(older_value) > 1e-9 else None
+    delta_abs = current_abs - previous_abs
+    delta_pct = None
+    if current_pct is not None and previous_pct is not None:
+        delta_pct = current_pct - previous_pct
+    return {
+        "entity_type": "asset",
+        "key": ticker,
+        "title": ticker,
+        "topic": "markets",
+        "country": None,
+        "asset_class": asset_class,
+        "source": current.source,
+        "observation_date": current.date,
+        "current_value": round(current_value, 4),
+        "previous_value": round(previous_value, 4),
+        "absolute_change": round(current_abs, 4),
+        "percent_change": round(current_pct, 2) if current_pct is not None else None,
+        "previous_absolute_change": round(previous_abs, 4),
+        "previous_percent_change": round(previous_pct, 2) if previous_pct is not None else None,
+        "delta_absolute_change": round(delta_abs, 4),
+        "delta_percent_change": round(delta_pct, 2) if delta_pct is not None else None,
+        "direction": _direction_for_change(current_abs),
+        "trend": _change_trend(current_abs, previous_abs),
+        "significance": _score_significance(absolute_change=current_abs, percent_change=current_pct, unit="price"),
+        "unit": current.currency or "price",
+    }
+
+
+def _change_trend(current_change: float, previous_change: float, tolerance: float = 1e-9) -> str:
+    if abs(current_change) <= tolerance and abs(previous_change) <= tolerance:
+        return "stable"
+    if current_change * previous_change < 0:
+        return "reversing"
+    if abs(current_change) > abs(previous_change):
+        return "accelerating"
+    if abs(current_change) < abs(previous_change):
+        return "decelerating"
+    return "stable"
 
 
 def _direction_for_change(change: float) -> str:
