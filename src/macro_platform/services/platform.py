@@ -26,6 +26,9 @@ from macro_platform.domain.models import (
     ChangeAlertEvent,
     ChangeAlertRule,
     ChangeSignal,
+    CrossCountryPresetExportBundle,
+    CrossCountryPresetImportItem,
+    CrossCountryPresetImportRequest,
     CrossCountryPreset,
     DashboardConfig,
     ModelPortfolio,
@@ -2397,6 +2400,11 @@ class PlatformService:
         return default_rows[0] if default_rows else rows[0]
 
     def save_cross_country_preset(self, preset: CrossCountryPreset) -> CrossCountryPreset:
+        preset.name = preset.name.strip()
+        if not preset.name:
+            raise ValueError("name must be non-empty.")
+        preset.countries = [item.upper() for item in preset.countries if item]
+        preset.countries = list(dict.fromkeys(preset.countries))
         if not preset.countries:
             raise ValueError("countries must include at least one country.")
         allowed_weights = {"growth", "inflation", "labor_unemployment", "policy_rate", "equity_return_63d"}
@@ -2404,6 +2412,7 @@ class PlatformService:
             raise ValueError("factor_weights includes unsupported keys.")
         if any(float(value) < 0 for value in preset.factor_weights.values()):
             raise ValueError("factor_weights values must be non-negative.")
+        self._validate_cross_country_preset_name_uniqueness(name=preset.name, current_preset_id=preset.id)
         existing = self.list_cross_country_presets()
         if preset.is_default:
             for item in existing:
@@ -2436,6 +2445,179 @@ class PlatformService:
             first = rows[0]
             first.is_default = True
             self.cross_country_preset_repo.save(first)
+
+    def export_cross_country_presets(self, limit: int = 500) -> CrossCountryPresetExportBundle:
+        rows = self.list_cross_country_presets()[:limit]
+        return CrossCountryPresetExportBundle(exported_at=datetime.now(), presets=rows)
+
+    def preview_import_cross_country_presets(
+        self,
+        request: CrossCountryPresetImportRequest,
+    ) -> dict[str, object]:
+        existing = self.list_cross_country_presets()
+        existing_by_name = {item.name.strip().lower(): item for item in existing}
+        errors: list[str] = []
+        actions: list[dict[str, object]] = []
+        names = [item.name.strip() for item in request.presets]
+        normalized = [item.lower() for item in names]
+        if not request.presets:
+            errors.append("presets must include at least one entry.")
+        if any(not item for item in names):
+            errors.append("import preset names must be non-empty.")
+        duplicate_names = sorted({name for name in normalized if normalized.count(name) > 1})
+        if duplicate_names:
+            errors.append("import contains duplicate preset names: " + ", ".join(duplicate_names))
+        create_count = 0
+        update_count = 0
+        conflict_count = 0
+        for item in request.presets:
+            clean_name = item.name.strip()
+            key = clean_name.lower()
+            match = existing_by_name.get(key)
+            action = "create"
+            if request.mode == "replace":
+                action = "create"
+            elif request.mode == "upsert":
+                action = "update" if match is not None else "create"
+            elif request.mode == "append":
+                if match is not None:
+                    action = "conflict"
+                    conflict_count += 1
+                    errors.append(f"preset names already exist: {clean_name}")
+            if action == "create":
+                create_count += 1
+            if action == "update":
+                update_count += 1
+            weights = item.factor_weights or {}
+            if any(float(value) < 0 for value in weights.values()):
+                errors.append(f"preset '{clean_name or '<blank>'}' has negative factor_weights values.")
+            actions.append(
+                {
+                    "name": clean_name,
+                    "action": action,
+                    "existing_preset_id": match.id if match is not None else None,
+                    "incoming_is_default": bool(item.is_default),
+                    "incoming_country_count": len(item.countries),
+                }
+            )
+        return {
+            "mode": request.mode,
+            "valid": len(errors) == 0,
+            "errors": sorted(set(errors)),
+            "summary": {
+                "incoming_count": len(request.presets),
+                "existing_count": len(existing),
+                "create_count": create_count,
+                "update_count": update_count,
+                "conflict_count": conflict_count,
+            },
+            "actions": actions,
+        }
+
+    def import_cross_country_presets(
+        self,
+        request: CrossCountryPresetImportRequest,
+    ) -> list[CrossCountryPreset]:
+        preview = self.preview_import_cross_country_presets(request=request)
+        if not bool(preview.get("valid", False)):
+            errors = preview.get("errors", [])
+            if errors:
+                raise ValueError("; ".join(str(item) for item in errors))
+            raise ValueError("preset import is invalid.")
+        existing = self.list_cross_country_presets()
+        snapshot = [item.model_copy(deep=True) for item in existing]
+        existing_by_name = {item.name.strip().lower(): item for item in existing}
+        existing_default_id = next((item.id for item in existing if item.is_default), None)
+        try:
+            if request.mode == "replace":
+                for item in existing:
+                    self.cross_country_preset_repo.delete(item.id)
+            imported: list[CrossCountryPreset] = []
+            force_first_default = request.mode == "replace" and not any(item.is_default for item in request.presets)
+            for idx, item in enumerate(request.presets):
+                match = existing_by_name.get(item.name.strip().lower()) if request.mode == "upsert" else None
+                if match is not None:
+                    preset = CrossCountryPreset(
+                        id=match.id,
+                        name=item.name,
+                        countries=item.countries,
+                        factor_weights=item.factor_weights or match.factor_weights,
+                        is_default=item.is_default,
+                        owner_scope=item.owner_scope,
+                        notes=item.notes,
+                    )
+                else:
+                    preset = self._create_cross_country_preset_from_import(
+                        item=item,
+                        is_default_override=True if force_first_default and idx == 0 else None,
+                    )
+                imported.append(self.save_cross_country_preset(preset))
+            preferred_default_id = existing_default_id
+            if preferred_default_id is None and imported:
+                preferred_default_id = imported[0].id
+            self._ensure_cross_country_default(preferred_preset_id=preferred_default_id)
+            return [self.get_cross_country_preset(item.id) for item in imported]
+        except Exception:
+            self._restore_cross_country_preset_snapshot(snapshot=snapshot)
+            raise
+
+    def _validate_cross_country_preset_name_uniqueness(
+        self,
+        name: str,
+        current_preset_id: str | None = None,
+    ) -> None:
+        key = name.strip().lower()
+        for item in self.list_cross_country_presets():
+            if current_preset_id is not None and item.id == current_preset_id:
+                continue
+            if item.name.strip().lower() == key:
+                raise ValueError(f"preset name '{name.strip()}' already exists.")
+
+    def _ensure_cross_country_default(self, preferred_preset_id: str | None = None) -> None:
+        rows = self.list_cross_country_presets()
+        if not rows:
+            return
+        defaults = [item for item in rows if item.is_default]
+        if defaults:
+            keep_id = preferred_preset_id if preferred_preset_id and any(item.id == preferred_preset_id for item in defaults) else defaults[0].id
+        else:
+            keep_id = preferred_preset_id if preferred_preset_id and any(item.id == preferred_preset_id for item in rows) else rows[0].id
+        for item in rows:
+            should_default = item.id == keep_id
+            if item.is_default != should_default:
+                item.is_default = should_default
+                self.cross_country_preset_repo.save(item)
+
+    def _restore_cross_country_preset_snapshot(self, snapshot: list[CrossCountryPreset]) -> None:
+        current = self.list_cross_country_presets()
+        for item in current:
+            self.cross_country_preset_repo.delete(item.id)
+        for item in snapshot:
+            self.cross_country_preset_repo.save(item.model_copy(deep=True))
+        preferred = next((item.id for item in snapshot if item.is_default), None)
+        self._ensure_cross_country_default(preferred_preset_id=preferred)
+
+    def _create_cross_country_preset_from_import(
+        self,
+        item: CrossCountryPresetImportItem,
+        is_default_override: bool | None = None,
+    ) -> CrossCountryPreset:
+        return CrossCountryPreset(
+            id=f"cross-country-preset-{uuid4().hex[:8]}",
+            name=item.name,
+            countries=item.countries,
+            factor_weights=item.factor_weights
+            or {
+                "growth": 1.0,
+                "inflation": 1.0,
+                "labor_unemployment": 1.0,
+                "policy_rate": 1.0,
+                "equity_return_63d": 1.0,
+            },
+            is_default=item.is_default if is_default_override is None else bool(is_default_override),
+            owner_scope=item.owner_scope,
+            notes=item.notes,
+        )
 
     def list_scenarios(self) -> list[ScenarioDefinition]:
         return self.scenario_repo.list_saved()

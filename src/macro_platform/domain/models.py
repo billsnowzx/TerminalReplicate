@@ -444,6 +444,25 @@ class CrossCountryPreset(BaseModel):
     notes: str | None = None
 
 
+class CrossCountryPresetImportItem(BaseModel):
+    name: str
+    countries: list[str] = Field(default_factory=lambda: ["US", "CN", "EA", "JP", "GB", "CA"])
+    factor_weights: dict[str, float] = Field(default_factory=dict)
+    is_default: bool = False
+    owner_scope: Literal["shared", "private"] = "shared"
+    notes: str | None = None
+
+
+class CrossCountryPresetImportRequest(BaseModel):
+    mode: Literal["append", "replace", "upsert"] = "append"
+    presets: list[CrossCountryPresetImportItem] = Field(default_factory=list)
+
+
+class CrossCountryPresetExportBundle(BaseModel):
+    exported_at: datetime
+    presets: list[CrossCountryPreset] = Field(default_factory=list)
+
+
 class ScenarioShock(BaseModel):
     label: str
     asset_class: str | None = None

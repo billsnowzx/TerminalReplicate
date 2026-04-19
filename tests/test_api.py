@@ -495,6 +495,46 @@ def test_cross_country_monitor_uses_default_preset_when_no_params(client):
     assert all(item["factor_weights"]["growth"] == 2.5 for item in payload)
 
 
+def test_cross_country_preset_export_import_preview_workflow(client):
+    source_payload = {
+        "id": "cross-country-export-source",
+        "name": "Export Source",
+        "countries": ["US", "EA"],
+        "factor_weights": {
+            "growth": 1.2,
+            "inflation": 0.8,
+            "labor_unemployment": 1.0,
+            "policy_rate": 1.0,
+            "equity_return_63d": 1.0,
+        },
+        "is_default": True,
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/monitors/cross-country/presets", json=source_payload).status_code == 200
+    exported = client.get("/api/monitors/cross-country/presets/export")
+    assert exported.status_code == 200
+    export_payload = exported.json()
+    assert "exported_at" in export_payload
+    assert len(export_payload["presets"]) >= 1
+
+    preview = client.post(
+        "/api/monitors/cross-country/presets/import/preview",
+        json={"mode": "replace", "presets": export_payload["presets"]},
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.json()
+    assert preview_payload["valid"] is True
+    imported = client.post(
+        "/api/monitors/cross-country/presets/import",
+        json={"mode": "replace", "presets": export_payload["presets"]},
+    )
+    assert imported.status_code == 200
+    imported_rows = imported.json()
+    assert len(imported_rows) >= 1
+    defaults = [item for item in imported_rows if item.get("is_default")]
+    assert len(defaults) == 1
+
+
 def test_change_monitor_report_section_generation(client):
     template_payload = {
         "id": "change-pack",

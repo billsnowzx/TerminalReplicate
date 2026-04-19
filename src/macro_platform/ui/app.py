@@ -10,6 +10,7 @@ import streamlit as st
 
 from macro_platform.domain.models import (
     ChangeAlertRule,
+    CrossCountryPresetImportRequest,
     CrossCountryPreset,
     ModelPortfolio,
     NotificationChannel,
@@ -242,6 +243,49 @@ elif view == "Cross Country Comparison":
     if presets:
         st.caption("Saved presets")
         st.dataframe(pd.DataFrame([item.model_dump(mode="json") for item in presets]), use_container_width=True)
+    with st.expander("Preset Import / Export", expanded=False):
+        bundle = service.export_cross_country_presets(limit=500)
+        bundle_json = json.dumps(bundle.model_dump(mode="json"), indent=2, default=str)
+        st.download_button(
+            "Download presets JSON",
+            data=bundle_json,
+            file_name="cross-country-presets.json",
+            mime="application/json",
+        )
+        import_mode = st.selectbox("Import mode", ["append", "replace", "upsert"], key="cross_country_import_mode")
+        import_payload = st.text_area("Import JSON payload", value="", key="cross_country_import_payload")
+        import_request = None
+        parse_error = None
+        if import_payload.strip():
+            try:
+                payload = json.loads(import_payload)
+                presets_payload = payload.get("presets", payload)
+                import_request = CrossCountryPresetImportRequest(mode=import_mode, presets=presets_payload)
+            except Exception as exc:  # noqa: BLE001
+                parse_error = str(exc)
+        if parse_error:
+            st.error(f"Invalid JSON payload: {parse_error}")
+        if st.button("Preview import", key="cross_country_preview_import"):
+            if import_request is None:
+                st.warning("Paste a valid JSON payload first.")
+            else:
+                preview = service.preview_import_cross_country_presets(import_request)
+                st.session_state["cross_country_import_preview"] = preview
+        preview_state = st.session_state.get("cross_country_import_preview")
+        if preview_state:
+            st.caption("Import preview")
+            st.json(preview_state)
+        if st.button("Run import", key="cross_country_run_import"):
+            if import_request is None:
+                st.warning("Paste a valid JSON payload first.")
+            else:
+                try:
+                    imported = service.import_cross_country_presets(import_request)
+                    st.success(f"Imported {len(imported)} preset(s).")
+                    st.session_state.pop("cross_country_import_preview", None)
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
     rows = pd.DataFrame(
         service.get_cross_country_comparison(
             countries=selected_countries,

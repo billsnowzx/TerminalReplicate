@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from macro_platform.config import settings
 from macro_platform.domain.models import (
     ChangeAlertRule,
+    CrossCountryPresetImportRequest,
     CrossCountryPreset,
     DashboardConfig,
     ModelPortfolio,
@@ -155,6 +156,24 @@ def cross_country_monitor(
 @app.get("/api/monitors/cross-country/presets")
 def list_cross_country_presets():
     return [item.model_dump(mode="json") for item in service.list_cross_country_presets()]
+
+
+@app.get("/api/monitors/cross-country/presets/export")
+def export_cross_country_presets(limit: int = Query(default=500, ge=1, le=5000)):
+    return service.export_cross_country_presets(limit=limit).model_dump(mode="json")
+
+
+@app.post("/api/monitors/cross-country/presets/import")
+def import_cross_country_presets(request: CrossCountryPresetImportRequest):
+    try:
+        return [item.model_dump(mode="json") for item in service.import_cross_country_presets(request=request)]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/monitors/cross-country/presets/import/preview")
+def preview_import_cross_country_presets(request: CrossCountryPresetImportRequest):
+    return service.preview_import_cross_country_presets(request=request)
 
 
 @app.get("/api/monitors/cross-country/presets/{preset_id}")
