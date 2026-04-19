@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from macro_platform.config import settings
 from macro_platform.domain.models import (
     ChangeAlertRule,
+    CrossCountryPreset,
     DashboardConfig,
     ModelPortfolio,
     NotificationChannel,
@@ -124,12 +125,45 @@ def country_monitor(country: str):
 
 
 @app.get("/api/monitors/cross-country")
-def cross_country_monitor(countries: str | None = None, limit: int = Query(default=12, ge=1, le=50)):
+def cross_country_monitor(
+    countries: str | None = None,
+    preset_id: str | None = None,
+    limit: int = Query(default=12, ge=1, le=50),
+):
     parsed = None
     if countries:
         parsed = [item.strip().upper() for item in countries.split(",") if item.strip()]
     try:
-        return service.get_cross_country_comparison(countries=parsed, limit=limit)
+        factor_weights = None
+        if preset_id:
+            preset = service.get_cross_country_preset(preset_id)
+            if parsed is None:
+                parsed = preset.countries
+            factor_weights = preset.factor_weights
+        return service.get_cross_country_comparison(countries=parsed, limit=limit, factor_weights=factor_weights)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Cross-country preset not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/monitors/cross-country/presets")
+def list_cross_country_presets():
+    return [item.model_dump(mode="json") for item in service.list_cross_country_presets()]
+
+
+@app.get("/api/monitors/cross-country/presets/{preset_id}")
+def get_cross_country_preset(preset_id: str):
+    try:
+        return service.get_cross_country_preset(preset_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Cross-country preset not found.") from exc
+
+
+@app.post("/api/monitors/cross-country/presets")
+def save_cross_country_preset(preset: CrossCountryPreset):
+    try:
+        return service.save_cross_country_preset(preset).model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

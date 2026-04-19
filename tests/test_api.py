@@ -393,6 +393,40 @@ def test_cross_country_monitor_endpoint_returns_scored_rows(client):
     assert scores == sorted(scores, reverse=True)
 
 
+def test_cross_country_preset_crud_and_monitor_with_preset(client):
+    preset_payload = {
+        "id": "cross-country-growth-tilt",
+        "name": "Growth Tilt",
+        "countries": ["US", "CN", "EA"],
+        "factor_weights": {
+            "growth": 2.0,
+            "inflation": 0.5,
+            "labor_unemployment": 0.5,
+            "policy_rate": 0.5,
+            "equity_return_63d": 1.0,
+        },
+        "owner_scope": "shared",
+        "notes": "Lean into growth momentum",
+    }
+    saved = client.post("/api/monitors/cross-country/presets", json=preset_payload)
+    assert saved.status_code == 200
+    listing = client.get("/api/monitors/cross-country/presets")
+    fetched = client.get("/api/monitors/cross-country/presets/cross-country-growth-tilt")
+    assert listing.status_code == 200
+    assert fetched.status_code == 200
+    assert any(item["id"] == "cross-country-growth-tilt" for item in listing.json())
+    monitor = client.get(
+        "/api/monitors/cross-country",
+        params={"preset_id": "cross-country-growth-tilt", "limit": 3},
+    )
+    assert monitor.status_code == 200
+    payload = monitor.json()
+    assert len(payload) == 3
+    assert all(item["country"] in {"US", "CN", "EA"} for item in payload)
+    assert all("factor_weights" in item for item in payload)
+    assert payload[0]["factor_weights"]["growth"] == 2.0
+
+
 def test_change_monitor_report_section_generation(client):
     template_payload = {
         "id": "change-pack",

@@ -9,6 +9,7 @@ from macro_platform.domain.models import (
     AssetPrice,
     ChangeAlertEvent,
     ChangeAlertRule,
+    CrossCountryPreset,
     DashboardConfig,
     ModelPortfolio,
     NotificationChannel,
@@ -49,6 +50,7 @@ from macro_platform.storage.tables import (
     ReportSnapshotRecord,
     ReportTemplateRecord,
     SavedScreenRecord,
+    CrossCountryPresetRecord,
     ScenarioRecord,
     SeriesDefinitionRecord,
     SourceHealthRecord,
@@ -780,6 +782,35 @@ class SavedScreenRepository:
                 )
             )
         return screen
+
+
+class CrossCountryPresetRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(self) -> list[CrossCountryPreset]:
+        with self.database.session_scope() as session:
+            rows = session.execute(select(CrossCountryPresetRecord).order_by(CrossCountryPresetRecord.id.asc())).scalars().all()
+            return [CrossCountryPreset.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, preset_id: str) -> CrossCountryPreset | None:
+        with self.database.session_scope() as session:
+            row = session.get(CrossCountryPresetRecord, preset_id)
+            if row is None:
+                return None
+            return CrossCountryPreset.model_validate(json.loads(row.payload))
+
+    def save(self, preset: CrossCountryPreset) -> CrossCountryPreset:
+        with self.database.session_scope() as session:
+            session.merge(
+                CrossCountryPresetRecord(
+                    id=preset.id,
+                    name=preset.name,
+                    owner_scope=preset.owner_scope,
+                    payload=json.dumps(preset.model_dump(mode="json")),
+                )
+            )
+        return preset
 
 
 class ScenarioRepository:

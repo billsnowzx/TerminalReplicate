@@ -211,6 +211,15 @@ class SavedScreenRecord(Base):
     payload: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class CrossCountryPresetRecord(Base):
+    __tablename__ = "cross_country_presets"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="shared")
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class ScenarioRecord(Base):
     __tablename__ = "scenarios"
 

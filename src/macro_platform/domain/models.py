@@ -426,6 +426,23 @@ class SavedScreen(BaseModel):
     owner_scope: Literal["shared", "private"] = "shared"
 
 
+class CrossCountryPreset(BaseModel):
+    id: str
+    name: str
+    countries: list[str] = Field(default_factory=lambda: ["US", "CN", "EA", "JP", "GB", "CA"])
+    factor_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "growth": 1.0,
+            "inflation": 1.0,
+            "labor_unemployment": 1.0,
+            "policy_rate": 1.0,
+            "equity_return_63d": 1.0,
+        }
+    )
+    owner_scope: Literal["shared", "private"] = "shared"
+    notes: str | None = None
+
+
 class ScenarioShock(BaseModel):
     label: str
     asset_class: str | None = None

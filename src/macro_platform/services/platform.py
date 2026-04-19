@@ -26,6 +26,7 @@ from macro_platform.domain.models import (
     ChangeAlertEvent,
     ChangeAlertRule,
     ChangeSignal,
+    CrossCountryPreset,
     DashboardConfig,
     ModelPortfolio,
     NotificationChannel,
@@ -88,6 +89,7 @@ from macro_platform.storage.repositories import (
     ReportSnapshotRepository,
     ReportTemplateRepository,
     SavedScreenRepository,
+    CrossCountryPresetRepository,
     ScenarioRepository,
     SeriesDefinitionRepository,
     SourceHealthRepository,
@@ -132,6 +134,7 @@ class PlatformService:
         self.dashboard_repo = DashboardRepository(self.database)
         self.watchlist_repo = WatchlistRepository(self.database)
         self.saved_screen_repo = SavedScreenRepository(self.database)
+        self.cross_country_preset_repo = CrossCountryPresetRepository(self.database)
         self.scenario_repo = ScenarioRepository(self.database)
         self.portfolio_repo = ModelPortfolioRepository(self.database)
         self.report_template_repo = ReportTemplateRepository(self.database)
@@ -417,6 +420,7 @@ class PlatformService:
         self,
         countries: list[str] | None = None,
         limit: int = 12,
+        factor_weights: dict[str, float] | None = None,
     ) -> list[dict[str, object]]:
         if limit < 1:
             raise ValueError("limit must be at least 1.")
@@ -483,6 +487,17 @@ class PlatformService:
             ("policy_rate", -1.0),
             ("equity_return_63d", 1.0),
         ]
+        weights = {
+            "growth": 1.0,
+            "inflation": 1.0,
+            "labor_unemployment": 1.0,
+            "policy_rate": 1.0,
+            "equity_return_63d": 1.0,
+        }
+        if factor_weights:
+            for key, value in factor_weights.items():
+                if key in weights:
+                    weights[key] = max(0.0, float(value))
         for field, direction in score_fields:
             values = [row[field] for row in rows if row[field] is not None]
             mean_value = float(sum(values) / len(values)) if values else 0.0
@@ -497,13 +512,19 @@ class PlatformService:
                     row[score_name] = round(((float(value) - mean_value) / std_value) * direction, 4)
         for row in rows:
             components = [
-                float(row["score_growth"]),
-                float(row["score_inflation"]),
-                float(row["score_labor_unemployment"]),
-                float(row["score_policy_rate"]),
-                float(row["score_equity_return_63d"]),
+                ("growth", float(row["score_growth"])),
+                ("inflation", float(row["score_inflation"])),
+                ("labor_unemployment", float(row["score_labor_unemployment"])),
+                ("policy_rate", float(row["score_policy_rate"])),
+                ("equity_return_63d", float(row["score_equity_return_63d"])),
             ]
-            row["composite_score"] = round(sum(components) / len(components), 4)
+            total_weight = sum(weights.get(name, 0.0) for name, _ in components)
+            if total_weight <= 1e-9:
+                row["composite_score"] = 0.0
+            else:
+                weighted = sum(score * weights.get(name, 0.0) for name, score in components)
+                row["composite_score"] = round(weighted / total_weight, 4)
+            row["factor_weights"] = weights
         rows.sort(key=lambda item: float(item["composite_score"]), reverse=True)
         return rows
 
@@ -2356,6 +2377,25 @@ class PlatformService:
 
     def save_saved_screen(self, screen: SavedScreen) -> SavedScreen:
         return self.saved_screen_repo.save(screen)
+
+    def list_cross_country_presets(self) -> list[CrossCountryPreset]:
+        return self.cross_country_preset_repo.list_saved()
+
+    def get_cross_country_preset(self, preset_id: str) -> CrossCountryPreset:
+        preset = self.cross_country_preset_repo.get(preset_id)
+        if preset is None:
+            raise KeyError(preset_id)
+        return preset
+
+    def save_cross_country_preset(self, preset: CrossCountryPreset) -> CrossCountryPreset:
+        if not preset.countries:
+            raise ValueError("countries must include at least one country.")
+        allowed_weights = {"growth", "inflation", "labor_unemployment", "policy_rate", "equity_return_63d"}
+        if set(preset.factor_weights.keys()) - allowed_weights:
+            raise ValueError("factor_weights includes unsupported keys.")
+        if any(float(value) < 0 for value in preset.factor_weights.values()):
+            raise ValueError("factor_weights values must be non-negative.")
+        return self.cross_country_preset_repo.save(preset)
 
     def list_scenarios(self) -> list[ScenarioDefinition]:
         return self.scenario_repo.list_saved()

@@ -10,6 +10,7 @@ import streamlit as st
 
 from macro_platform.domain.models import (
     ChangeAlertRule,
+    CrossCountryPreset,
     ModelPortfolio,
     NotificationChannel,
     ObservationQuery,
@@ -111,16 +112,88 @@ elif view == "Country Dashboard":
 elif view == "Cross Country Comparison":
     st.subheader("Cross Country Comparison")
     default_countries = ["US", "CN", "EA", "JP", "GB", "CA"]
+    presets = service.list_cross_country_presets()
+    selected_preset_id = st.selectbox(
+        "Preset",
+        ["custom"] + [item.id for item in presets],
+        format_func=lambda x: "Custom" if x == "custom" else next(item.name for item in presets if item.id == x),
+    )
+    active_preset = None if selected_preset_id == "custom" else next(item for item in presets if item.id == selected_preset_id)
+    preset_state_key = selected_preset_id if selected_preset_id != "custom" else "custom"
     selected_countries = st.multiselect(
         "Countries",
         options=default_countries,
-        default=default_countries,
+        default=default_countries if active_preset is None else active_preset.countries,
+        key=f"cross_country_countries_{preset_state_key}",
     )
+    st.caption("Factor weights")
+    weight_growth = st.slider(
+        "Growth",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("growth", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_growth_{preset_state_key}",
+    )
+    weight_inflation = st.slider(
+        "Inflation (lower is better)",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("inflation", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_inflation_{preset_state_key}",
+    )
+    weight_labor = st.slider(
+        "Labor Unemployment (lower is better)",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("labor_unemployment", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_labor_{preset_state_key}",
+    )
+    weight_policy = st.slider(
+        "Policy Rate (lower is better)",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("policy_rate", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_policy_{preset_state_key}",
+    )
+    weight_equity = st.slider(
+        "Equity Return 63D",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("equity_return_63d", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_equity_{preset_state_key}",
+    )
+    weights = {
+        "growth": weight_growth,
+        "inflation": weight_inflation,
+        "labor_unemployment": weight_labor,
+        "policy_rate": weight_policy,
+        "equity_return_63d": weight_equity,
+    }
     comparison_limit = st.slider("Rows", min_value=3, max_value=20, value=6, step=1)
+    preset_name = st.text_input("Save as preset", value="")
+    if st.button("Save cross-country preset") and preset_name.strip():
+        preset = CrossCountryPreset(
+            id=f"cross-country-preset-{uuid4().hex[:8]}",
+            name=preset_name.strip(),
+            countries=selected_countries or default_countries,
+            factor_weights=weights,
+            owner_scope="shared",
+        )
+        service.save_cross_country_preset(preset)
+        st.success(f"Saved preset: {preset.name}")
+    if presets:
+        st.caption("Saved presets")
+        st.dataframe(pd.DataFrame([item.model_dump(mode="json") for item in presets]), use_container_width=True)
     rows = pd.DataFrame(
         service.get_cross_country_comparison(
             countries=selected_countries,
             limit=comparison_limit,
+            factor_weights=weights,
         )
     )
     st.dataframe(rows, use_container_width=True)
