@@ -135,8 +135,19 @@ elif view == "Release Calendar":
     country_filter = st.sidebar.selectbox("Country filter", ["All", "US", "EA", "CN", "JP", "GB", "CA"])
     country = None if country_filter == "All" else country_filter
     horizon = st.sidebar.slider("Days ahead", min_value=14, max_value=180, value=60, step=7)
+    alert_horizon = st.sidebar.slider("Alert horizon (days)", min_value=3, max_value=45, value=14, step=1)
     calendar = pd.DataFrame([item.model_dump(mode="json") for item in service.get_release_calendar(country=country, days=horizon)])
     freshness = pd.DataFrame([item.model_dump(mode="json") for item in service.get_freshness_status(country=country)])
+    alerts = pd.DataFrame(service.get_release_alerts(country=country, days=alert_horizon, limit=200))
+    if not alerts.empty:
+        high_alerts = int((alerts["severity"] == "high").sum())
+        medium_alerts = int((alerts["severity"] == "medium").sum())
+        low_alerts = int((alerts["severity"] == "low").sum())
+        st.warning(
+            f"Release alerts: {high_alerts} high, {medium_alerts} medium, {low_alerts} low."
+        )
+    st.caption("Release alerts")
+    st.dataframe(alerts, use_container_width=True)
     left, right = st.columns(2)
     with left:
         st.caption("Expected next releases")

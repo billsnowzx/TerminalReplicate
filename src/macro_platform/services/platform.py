@@ -473,6 +473,61 @@ class PlatformService:
                 )
         return sorted(rows, key=lambda item: (item.expected_next_release or date.max, item.country, item.title))
 
+    def get_release_alerts(
+        self,
+        country: str | None = None,
+        days: int = 14,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        if days < 1:
+            raise ValueError("days must be at least 1.")
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        today = date.today()
+        due_horizon = today + timedelta(days=days)
+        severity_rank = {"high": 3, "medium": 2, "low": 1}
+        alerts: list[dict[str, object]] = []
+        for event in self.get_freshness_status(country=country):
+            expected = event.expected_next_release
+            days_to_release = (expected - today).days if expected is not None else None
+            alert_type: str | None = None
+            severity: str | None = None
+            if event.freshness_status == "stale":
+                alert_type = "stale"
+                severity = "high"
+            elif expected is not None and expected < today:
+                alert_type = "overdue"
+                severity = "medium"
+            elif expected is not None and expected <= due_horizon:
+                alert_type = "due_soon"
+                severity = "low"
+            if alert_type is None or severity is None:
+                continue
+            alerts.append(
+                {
+                    "series_id": event.series_id,
+                    "title": event.title,
+                    "country": event.country,
+                    "source": event.source,
+                    "frequency": event.frequency,
+                    "last_observation_date": event.last_observation_date,
+                    "expected_next_release": event.expected_next_release,
+                    "freshness_status": event.freshness_status,
+                    "alert_type": alert_type,
+                    "severity": severity,
+                    "days_to_release": days_to_release,
+                }
+            )
+        alerts = sorted(
+            alerts,
+            key=lambda item: (
+                -severity_rank[str(item["severity"])],
+                item["days_to_release"] if item["days_to_release"] is not None else 10**9,
+                str(item["series_id"]),
+            ),
+        )
+        return alerts[:limit]
+
     def get_freshness_status(
         self,
         country: str | None = None,

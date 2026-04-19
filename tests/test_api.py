@@ -1491,11 +1491,18 @@ def test_screen_endpoint_returns_ranked_assets(client):
 def test_calendar_and_freshness_endpoints_return_payloads(client):
     calendar = client.get("/api/calendar/releases", params={"country": "US", "days": 45})
     freshness = client.get("/api/status/freshness", params={"country": "EA"})
+    alerts = client.get("/api/calendar/release-alerts", params={"country": "US", "days": 30, "limit": 25})
     assert calendar.status_code == 200
     assert freshness.status_code == 200
+    assert alerts.status_code == 200
     assert isinstance(calendar.json(), list)
     assert isinstance(freshness.json(), list)
+    assert isinstance(alerts.json(), list)
     assert any(item["country"] == "EA" for item in freshness.json())
+    if alerts.json():
+        first = alerts.json()[0]
+        assert first["alert_type"] in {"stale", "overdue", "due_soon"}
+        assert first["severity"] in {"high", "medium", "low"}
 
 
 def test_source_health_endpoints_reflect_macro_fallback_degradation(client):

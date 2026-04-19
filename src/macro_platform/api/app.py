@@ -138,6 +138,14 @@ def release_calendar(country: str | None = None, days: int = 60):
     return [item.model_dump(mode="json") for item in service.get_release_calendar(country=country, days=days)]
 
 
+@app.get("/api/calendar/release-alerts")
+def release_alerts(country: str | None = None, days: int = Query(default=14, ge=1), limit: int = Query(default=200, ge=1, le=2000)):
+    try:
+        return service.get_release_alerts(country=country, days=days, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/status/freshness")
 def freshness_status(country: str | None = None, topic: str | None = None):
     return [item.model_dump(mode="json") for item in service.get_freshness_status(country=country, topic=topic)]
