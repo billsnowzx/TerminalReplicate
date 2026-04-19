@@ -2379,13 +2379,22 @@ class PlatformService:
         return self.saved_screen_repo.save(screen)
 
     def list_cross_country_presets(self) -> list[CrossCountryPreset]:
-        return self.cross_country_preset_repo.list_saved()
+        rows = self.cross_country_preset_repo.list_saved()
+        rows.sort(key=lambda item: (not item.is_default, item.name.lower()))
+        return rows
 
     def get_cross_country_preset(self, preset_id: str) -> CrossCountryPreset:
         preset = self.cross_country_preset_repo.get(preset_id)
         if preset is None:
             raise KeyError(preset_id)
         return preset
+
+    def get_default_cross_country_preset(self) -> CrossCountryPreset | None:
+        rows = self.list_cross_country_presets()
+        if not rows:
+            return None
+        default_rows = [item for item in rows if item.is_default]
+        return default_rows[0] if default_rows else rows[0]
 
     def save_cross_country_preset(self, preset: CrossCountryPreset) -> CrossCountryPreset:
         if not preset.countries:
@@ -2395,7 +2404,38 @@ class PlatformService:
             raise ValueError("factor_weights includes unsupported keys.")
         if any(float(value) < 0 for value in preset.factor_weights.values()):
             raise ValueError("factor_weights values must be non-negative.")
-        return self.cross_country_preset_repo.save(preset)
+        existing = self.list_cross_country_presets()
+        if preset.is_default:
+            for item in existing:
+                if item.id == preset.id:
+                    continue
+                if item.is_default:
+                    item.is_default = False
+                    self.cross_country_preset_repo.save(item)
+        elif not existing:
+            preset.is_default = True
+        saved = self.cross_country_preset_repo.save(preset)
+        return saved
+
+    def set_default_cross_country_preset(self, preset_id: str) -> CrossCountryPreset:
+        target = self.get_cross_country_preset(preset_id)
+        rows = self.list_cross_country_presets()
+        for item in rows:
+            if item.id == target.id:
+                item.is_default = True
+            elif item.is_default:
+                item.is_default = False
+            self.cross_country_preset_repo.save(item)
+        return self.get_cross_country_preset(preset_id)
+
+    def delete_cross_country_preset(self, preset_id: str) -> None:
+        target = self.get_cross_country_preset(preset_id)
+        self.cross_country_preset_repo.delete(preset_id)
+        rows = self.list_cross_country_presets()
+        if target.is_default and rows and not any(item.is_default for item in rows):
+            first = rows[0]
+            first.is_default = True
+            self.cross_country_preset_repo.save(first)
 
     def list_scenarios(self) -> list[ScenarioDefinition]:
         return self.scenario_repo.list_saved()

@@ -427,6 +427,74 @@ def test_cross_country_preset_crud_and_monitor_with_preset(client):
     assert payload[0]["factor_weights"]["growth"] == 2.0
 
 
+def test_cross_country_preset_set_default_and_delete_reassigns_default(client):
+    first_payload = {
+        "id": "cross-country-default-a",
+        "name": "Default A",
+        "countries": ["US", "EA"],
+        "factor_weights": {
+            "growth": 1.0,
+            "inflation": 1.0,
+            "labor_unemployment": 1.0,
+            "policy_rate": 1.0,
+            "equity_return_63d": 1.0,
+        },
+        "owner_scope": "shared",
+    }
+    second_payload = {
+        "id": "cross-country-default-b",
+        "name": "Default B",
+        "countries": ["US", "CN"],
+        "factor_weights": {
+            "growth": 2.0,
+            "inflation": 0.5,
+            "labor_unemployment": 1.0,
+            "policy_rate": 1.0,
+            "equity_return_63d": 1.5,
+        },
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/monitors/cross-country/presets", json=first_payload).status_code == 200
+    assert client.post("/api/monitors/cross-country/presets", json=second_payload).status_code == 200
+    set_default = client.post("/api/monitors/cross-country/presets/cross-country-default-b/set-default")
+    assert set_default.status_code == 200
+    listing = client.get("/api/monitors/cross-country/presets")
+    assert listing.status_code == 200
+    by_id = {item["id"]: item for item in listing.json()}
+    assert by_id["cross-country-default-b"]["is_default"] is True
+    assert by_id["cross-country-default-a"]["is_default"] is False
+    deleted = client.delete("/api/monitors/cross-country/presets/cross-country-default-b")
+    assert deleted.status_code == 200
+    listing_after = client.get("/api/monitors/cross-country/presets")
+    assert listing_after.status_code == 200
+    by_id_after = {item["id"]: item for item in listing_after.json()}
+    assert by_id_after["cross-country-default-a"]["is_default"] is True
+
+
+def test_cross_country_monitor_uses_default_preset_when_no_params(client):
+    preset_payload = {
+        "id": "cross-country-default-monitor",
+        "name": "Default Monitor Preset",
+        "countries": ["US", "CN", "EA"],
+        "factor_weights": {
+            "growth": 2.5,
+            "inflation": 0.3,
+            "labor_unemployment": 0.3,
+            "policy_rate": 0.3,
+            "equity_return_63d": 1.0,
+        },
+        "owner_scope": "shared",
+        "is_default": True,
+    }
+    assert client.post("/api/monitors/cross-country/presets", json=preset_payload).status_code == 200
+    response = client.get("/api/monitors/cross-country", params={"limit": 3})
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 3
+    assert all(item["country"] in {"US", "CN", "EA"} for item in payload)
+    assert all(item["factor_weights"]["growth"] == 2.5 for item in payload)
+
+
 def test_change_monitor_report_section_generation(client):
     template_payload = {
         "id": "change-pack",

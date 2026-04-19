@@ -113,10 +113,25 @@ elif view == "Cross Country Comparison":
     st.subheader("Cross Country Comparison")
     default_countries = ["US", "CN", "EA", "JP", "GB", "CA"]
     presets = service.list_cross_country_presets()
+    default_preset = service.get_default_cross_country_preset()
+    preset_index = 0
+    if default_preset is not None:
+        preset_ids = [item.id for item in presets]
+        if default_preset.id in preset_ids:
+            preset_index = preset_ids.index(default_preset.id) + 1
     selected_preset_id = st.selectbox(
         "Preset",
         ["custom"] + [item.id for item in presets],
-        format_func=lambda x: "Custom" if x == "custom" else next(item.name for item in presets if item.id == x),
+        index=preset_index,
+        format_func=lambda x: (
+            "Custom"
+            if x == "custom"
+            else next(
+                f"{item.name}{' (Default)' if item.is_default else ''}"
+                for item in presets
+                if item.id == x
+            )
+        ),
     )
     active_preset = None if selected_preset_id == "custom" else next(item for item in presets if item.id == selected_preset_id)
     preset_state_key = selected_preset_id if selected_preset_id != "custom" else "custom"
@@ -175,17 +190,55 @@ elif view == "Cross Country Comparison":
         "equity_return_63d": weight_equity,
     }
     comparison_limit = st.slider("Rows", min_value=3, max_value=20, value=6, step=1)
-    preset_name = st.text_input("Save as preset", value="")
-    if st.button("Save cross-country preset") and preset_name.strip():
-        preset = CrossCountryPreset(
-            id=f"cross-country-preset-{uuid4().hex[:8]}",
-            name=preset_name.strip(),
-            countries=selected_countries or default_countries,
-            factor_weights=weights,
-            owner_scope="shared",
-        )
-        service.save_cross_country_preset(preset)
-        st.success(f"Saved preset: {preset.name}")
+    preset_name = st.text_input(
+        "Preset name",
+        value="" if active_preset is None else active_preset.name,
+        key=f"cross_country_preset_name_{preset_state_key}",
+    )
+    preset_notes = st.text_area(
+        "Preset notes",
+        value="" if active_preset is None or active_preset.notes is None else active_preset.notes,
+        key=f"cross_country_preset_notes_{preset_state_key}",
+    )
+    if active_preset is None:
+        if st.button("Create preset") and preset_name.strip():
+            preset = CrossCountryPreset(
+                id=f"cross-country-preset-{uuid4().hex[:8]}",
+                name=preset_name.strip(),
+                countries=selected_countries or default_countries,
+                factor_weights=weights,
+                owner_scope="shared",
+                notes=preset_notes or None,
+                is_default=(default_preset is None),
+            )
+            service.save_cross_country_preset(preset)
+            st.success(f"Saved preset: {preset.name}")
+            st.rerun()
+    else:
+        action_left, action_mid, action_right = st.columns(3)
+        with action_left:
+            if st.button("Update preset"):
+                updated = active_preset.model_copy(
+                    update={
+                        "name": preset_name.strip() or active_preset.name,
+                        "countries": selected_countries or default_countries,
+                        "factor_weights": weights,
+                        "notes": preset_notes or None,
+                    }
+                )
+                service.save_cross_country_preset(updated)
+                st.success(f"Updated preset: {updated.name}")
+                st.rerun()
+        with action_mid:
+            if st.button("Set as default") and not active_preset.is_default:
+                service.set_default_cross_country_preset(active_preset.id)
+                st.success(f"Set default preset: {active_preset.name}")
+                st.rerun()
+        with action_right:
+            if st.button("Delete preset"):
+                service.delete_cross_country_preset(active_preset.id)
+                st.success(f"Deleted preset: {active_preset.name}")
+                st.rerun()
     if presets:
         st.caption("Saved presets")
         st.dataframe(pd.DataFrame([item.model_dump(mode="json") for item in presets]), use_container_width=True)

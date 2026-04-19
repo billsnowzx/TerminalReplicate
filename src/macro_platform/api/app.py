@@ -140,6 +140,11 @@ def cross_country_monitor(
             if parsed is None:
                 parsed = preset.countries
             factor_weights = preset.factor_weights
+        elif parsed is None:
+            default_preset = service.get_default_cross_country_preset()
+            if default_preset is not None:
+                parsed = default_preset.countries
+                factor_weights = default_preset.factor_weights
         return service.get_cross_country_comparison(countries=parsed, limit=limit, factor_weights=factor_weights)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Cross-country preset not found.") from exc
@@ -166,6 +171,23 @@ def save_cross_country_preset(preset: CrossCountryPreset):
         return service.save_cross_country_preset(preset).model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/monitors/cross-country/presets/{preset_id}/set-default")
+def set_default_cross_country_preset(preset_id: str):
+    try:
+        return service.set_default_cross_country_preset(preset_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Cross-country preset not found.") from exc
+
+
+@app.delete("/api/monitors/cross-country/presets/{preset_id}")
+def delete_cross_country_preset(preset_id: str):
+    try:
+        service.delete_cross_country_preset(preset_id)
+        return {"status": "deleted", "id": preset_id}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Cross-country preset not found.") from exc
 
 
 @app.get("/api/markets/monitor")

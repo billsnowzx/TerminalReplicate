@@ -439,6 +439,7 @@ class CrossCountryPreset(BaseModel):
             "equity_return_63d": 1.0,
         }
     )
+    is_default: bool = False
     owner_scope: Literal["shared", "private"] = "shared"
     notes: str | None = None
 

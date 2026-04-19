@@ -812,6 +812,10 @@ class CrossCountryPresetRepository:
             )
         return preset
 
+    def delete(self, preset_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(CrossCountryPresetRecord).where(CrossCountryPresetRecord.id == preset_id))
+
 
 class ScenarioRepository:
     def __init__(self, database: Database) -> None:
