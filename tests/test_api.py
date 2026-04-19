@@ -382,15 +382,22 @@ def test_change_monitor_delta_endpoint_returns_trend_rows(client):
 def test_cross_country_monitor_endpoint_returns_scored_rows(client):
     response = client.get(
         "/api/monitors/cross-country",
-        params={"countries": "US,CN,EA,JP", "limit": 4},
+        params={"countries": "US,CN,EA,JP,GB,CA", "limit": 6},
     )
     assert response.status_code == 200
     payload = response.json()
-    assert len(payload) == 4
+    assert len(payload) == 6
     assert all("country" in row for row in payload)
     assert all("composite_score" in row for row in payload)
     scores = [float(row["composite_score"]) for row in payload]
     assert scores == sorted(scores, reverse=True)
+    by_country = {row["country"]: row for row in payload}
+    for country in ["US", "CN", "EA", "JP", "GB", "CA"]:
+        assert country in by_country
+    labor_covered = sum(1 for country in by_country if by_country[country].get("labor_unemployment") is not None)
+    policy_covered = sum(1 for country in by_country if by_country[country].get("policy_rate") is not None)
+    assert labor_covered >= 4
+    assert policy_covered >= 4
 
 
 def test_cross_country_preset_crud_and_monitor_with_preset(client):

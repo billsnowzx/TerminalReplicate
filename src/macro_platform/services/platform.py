@@ -445,14 +445,25 @@ class PlatformService:
             "US": "world_bank:USA:FP.CPI.TOTL.ZG",
             "CN": "world_bank:CHN:FP.CPI.TOTL.ZG",
             "EA": "world_bank:EMU:FP.CPI.TOTL.ZG",
+            "JP": "world_bank:JPN:FP.CPI.TOTL.ZG",
+            "GB": "world_bank:GBR:FP.CPI.TOTL.ZG",
+            "CA": "world_bank:CAN:FP.CPI.TOTL.ZG",
         }
         labor_series_map = {
             "US": "oecd:US:LRUN64TT",
             "EA": "oecd:EA:LRUN64TT",
+            "CN": "world_bank:CHN:SL.UEM.TOTL.ZS",
+            "JP": "world_bank:JPN:SL.UEM.TOTL.ZS",
+            "GB": "world_bank:GBR:SL.UEM.TOTL.ZS",
+            "CA": "world_bank:CAN:SL.UEM.TOTL.ZS",
         }
         policy_series_map = {
             "US": "fred:FEDFUNDS",
             "EA": "ecb:FM/B.U2.EUR.4F.KR.MRR_FR.LEV",
+            "CN": "world_bank:CHN:FR.INR.LEND",
+            "JP": "world_bank:JPN:FR.INR.LEND",
+            "GB": "world_bank:GBR:FR.INR.LEND",
+            "CA": "world_bank:CAN:FR.INR.LEND",
         }
         equity_proxy_map = {
             "US": "SPY",
