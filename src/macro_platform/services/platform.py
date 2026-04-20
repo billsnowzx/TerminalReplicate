@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from macro_platform.analytics.core import classify_regime, drawdown, screen_assets, year_over_year, yield_curve_slope
+from macro_platform.analytics.core import classify_regime, drawdown, pct_return, screen_assets, year_over_year, yield_curve_slope
 from macro_platform.catalog.tracked_universe import (
     DEFAULT_DASHBOARDS,
     MARKET_UNIVERSE,
@@ -603,6 +603,44 @@ class PlatformService:
             "unemployment_rate": round(unemployment_rate, 2),
             "yield_curve_slope": round(slope, 2),
             "regime": regime,
+        }
+
+    def get_regime_explanation(self) -> dict[str, object]:
+        snapshot = self.get_regime_snapshot()
+        inflation = float(snapshot["inflation_yoy"])
+        unemployment = float(snapshot["unemployment_rate"])
+        slope = float(snapshot["yield_curve_slope"])
+        rules = [
+            {
+                "regime": "stagflation risk",
+                "condition": "inflation_yoy > 3.5 and yield_curve_slope < 0",
+                "matched": inflation > 3.5 and slope < 0,
+            },
+            {
+                "regime": "overheating",
+                "condition": "inflation_yoy > 3.0 and unemployment_rate < 4.5",
+                "matched": inflation > 3.0 and unemployment < 4.5,
+            },
+            {
+                "regime": "growth rebound",
+                "condition": "inflation_yoy < 2.5 and yield_curve_slope > 0 and unemployment_rate < 5.5",
+                "matched": inflation < 2.5 and slope > 0 and unemployment < 5.5,
+            },
+            {
+                "regime": "slowdown",
+                "condition": "unemployment_rate > 6.0 or yield_curve_slope < -0.5",
+                "matched": unemployment > 6.0 or slope < -0.5,
+            },
+            {
+                "regime": "disinflation",
+                "condition": "fallback default when none of the above match",
+                "matched": snapshot["regime"] == "disinflation",
+            },
+        ]
+        return {
+            "snapshot": snapshot,
+            "rules": rules,
+            "selected_regime": snapshot["regime"],
         }
 
     def get_release_calendar(
@@ -1862,6 +1900,68 @@ class PlatformService:
         combined = pd.concat(frames, ignore_index=True)
         results = screen_assets(combined, self.market_universe, spec.filters)
         return [item.model_dump() for item in results]
+
+    def run_screen_explain(self, spec: ScreenSpec) -> dict[str, object]:
+        universe = spec.universe or list(self.market_universe.keys())
+        traces: list[dict[str, object]] = []
+        for ticker in universe:
+            prices = self.get_prices(ticker, start_date=date.today() - timedelta(days=365))
+            if not prices:
+                traces.append(
+                    {
+                        "ticker": ticker,
+                        "asset_class": self.market_universe.get(ticker, "unknown"),
+                        "has_data": False,
+                        "passed": False,
+                        "reason": "no_price_data",
+                        "metrics": {},
+                        "filter_trace": [],
+                    }
+                )
+                continue
+            frame = pd.DataFrame([row.model_dump(mode="json") for row in prices]).sort_values("date")
+            closes = frame["close"].reset_index(drop=True)
+            if len(closes) < 64:
+                traces.append(
+                    {
+                        "ticker": ticker,
+                        "asset_class": self.market_universe.get(ticker, "unknown"),
+                        "has_data": True,
+                        "passed": False,
+                        "reason": "insufficient_history",
+                        "metrics": {"rows": int(len(closes))},
+                        "filter_trace": [],
+                    }
+                )
+                continue
+            metrics = {
+                "last_close": float(closes.iloc[-1]),
+                "return_21d": float(pct_return(closes, 21).iloc[-1]),
+                "return_63d": float(pct_return(closes, 63).iloc[-1]),
+                "drawdown": float(drawdown(closes).iloc[-63:].min()),
+            }
+            filter_trace = _evaluate_screen_filters(metrics, spec.filters)
+            passed = all(item["passed"] for item in filter_trace) if filter_trace else True
+            traces.append(
+                {
+                    "ticker": ticker,
+                    "asset_class": self.market_universe.get(ticker, "unknown"),
+                    "has_data": True,
+                    "passed": passed,
+                    "reason": "passed" if passed else "filtered_out",
+                    "metrics": metrics,
+                    "filter_trace": filter_trace,
+                }
+            )
+        ranked = self.run_screen(spec)
+        ranked_tickers = {item["ticker"] for item in ranked}
+        for item in traces:
+            item["ranked"] = item["ticker"] in ranked_tickers
+        return {
+            "spec": spec.model_dump(mode="json"),
+            "ranked_results": ranked,
+            "explanations": traces,
+        }
 
     def list_change_alert_rules(self) -> list[ChangeAlertRule]:
         return self.change_alert_rule_repo.list_saved()
@@ -4230,6 +4330,35 @@ def _build_asset_change_delta(
         "significance": _score_significance(absolute_change=current_abs, percent_change=current_pct, unit="price"),
         "unit": current.currency or "price",
     }
+
+
+def _evaluate_screen_filters(metrics: dict[str, float], filters: list[object]) -> list[dict[str, object]]:
+    trace: list[dict[str, object]] = []
+    for current in filters:
+        field = getattr(current, "field", "")
+        operator = getattr(current, "operator", "")
+        threshold = getattr(current, "value", None)
+        value = metrics.get(str(field))
+        passed = False
+        if value is not None and threshold is not None:
+            if operator == "gt":
+                passed = value > threshold
+            elif operator == "gte":
+                passed = value >= threshold
+            elif operator == "lt":
+                passed = value < threshold
+            elif operator == "lte":
+                passed = value <= threshold
+        trace.append(
+            {
+                "field": field,
+                "operator": operator,
+                "threshold": threshold,
+                "value": value,
+                "passed": passed,
+            }
+        )
+    return trace
 
 
 def _change_trend(current_change: float, previous_change: float, tolerance: float = 1e-9) -> str:

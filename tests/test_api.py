@@ -1715,6 +1715,36 @@ def test_screen_endpoint_returns_ranked_assets(client):
     assert "return_63d" in payload[0]
 
 
+def test_screen_explain_endpoint_returns_filter_traces(client):
+    response = client.post(
+        "/api/screens/run/explain",
+        json={
+            "universe": ["SPY", "QQQ", "TLT"],
+            "filters": [{"field": "return_63d", "operator": "gte", "value": -100.0}],
+            "ranking": "return_63d",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert "ranked_results" in payload
+    assert "explanations" in payload
+    assert len(payload["explanations"]) >= 1
+    first = payload["explanations"][0]
+    assert "ticker" in first
+    assert "filter_trace" in first
+
+
+def test_regime_explain_endpoint_returns_rule_trace(client):
+    response = client.get("/api/regimes/explain")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "snapshot" in payload
+    assert "rules" in payload
+    assert isinstance(payload["rules"], list)
+    assert len(payload["rules"]) >= 1
+    assert "selected_regime" in payload
+
+
 def test_calendar_and_freshness_endpoints_return_payloads(client):
     calendar = client.get("/api/calendar/releases", params={"country": "US", "days": 45})
     freshness = client.get("/api/status/freshness", params={"country": "EA"})

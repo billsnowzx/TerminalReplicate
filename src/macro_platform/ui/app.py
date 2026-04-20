@@ -341,12 +341,16 @@ elif view == "Cross Asset Monitor":
 
 elif view == "Regime Monitor":
     st.subheader("Regime Monitor")
-    regime = service.get_regime_snapshot()
+    regime_explain = service.get_regime_explanation()
+    regime = regime_explain["snapshot"]
     cols = st.columns(4)
     cols[0].metric("Inflation YoY", f"{regime['inflation_yoy']}%")
     cols[1].metric("Unemployment", f"{regime['unemployment_rate']}%")
     cols[2].metric("10Y-2Y", f"{regime['yield_curve_slope']} pts")
     cols[3].metric("Current Regime", str(regime["regime"]))
+    rules_frame = pd.DataFrame(regime_explain.get("rules", []))
+    st.caption("Regime rule trace")
+    st.dataframe(rules_frame, use_container_width=True)
     left, right = st.columns(2)
     with left:
         render_timeseries("fred:DGS10", "US 10Y Yield")
@@ -1670,8 +1674,17 @@ elif view == "Screening Lab":
         payload = SavedScreen(id=f"screen-{uuid4().hex[:8]}", name=saved_screen_name.strip(), spec=spec)
         service.save_saved_screen(payload)
         st.success(f"Saved screen: {payload.name}")
-    results = pd.DataFrame(service.run_screen(spec))
+    explain = service.run_screen_explain(spec)
+    results = pd.DataFrame(explain.get("ranked_results", []))
     st.dataframe(results, use_container_width=True)
+    explain_rows = pd.DataFrame(explain.get("explanations", []))
+    st.caption("Screen explainability")
+    st.dataframe(explain_rows, use_container_width=True)
+    if not explain_rows.empty:
+        selected_trace_ticker = st.selectbox("Trace ticker", explain_rows["ticker"].tolist(), key="screen_trace_ticker")
+        selected_trace = next(item for item in explain.get("explanations", []) if item["ticker"] == selected_trace_ticker)
+        st.caption(f"Filter trace: {selected_trace_ticker}")
+        st.json(selected_trace.get("filter_trace", []))
 
 elif view == "Research Library":
     st.subheader("Research Library")

@@ -219,6 +219,11 @@ def regimes():
     return service.get_regime_snapshot()
 
 
+@app.get("/api/regimes/explain")
+def regime_explain():
+    return service.get_regime_explanation()
+
+
 @app.get("/api/calendar/releases")
 def release_calendar(country: str | None = None, days: int = 60):
     return [item.model_dump(mode="json") for item in service.get_release_calendar(country=country, days=days)]
@@ -872,6 +877,11 @@ def run_due_notification_digests():
 @app.post("/api/screens/run")
 def run_screen(spec: ScreenSpec):
     return service.run_screen(spec)
+
+
+@app.post("/api/screens/run/explain")
+def run_screen_explain(spec: ScreenSpec):
+    return service.run_screen_explain(spec)
 
 
 @app.get("/api/screens/saved")
