@@ -59,7 +59,30 @@ def render_source_alert_banner(limit: int = 5) -> None:
         "Source health alerts active: "
         f"{high_count} high, {medium_count} medium, {low_count} low."
     )
-    st.dataframe(pd.DataFrame(alerts), use_container_width=True)
+    with st.expander("Source alert details", expanded=False):
+        st.dataframe(pd.DataFrame(alerts), use_container_width=True)
+
+
+def render_workspace_freshness_badge(workspace: str, alert_limit: int = 200) -> None:
+    alerts = service.get_source_health_alerts(limit=alert_limit)
+    if not alerts:
+        st.caption(f"{workspace}: data freshness status is healthy (no active source alerts).")
+        return
+    high_count = sum(1 for item in alerts if item["severity"] == "high")
+    medium_count = sum(1 for item in alerts if item["severity"] == "medium")
+    low_count = sum(1 for item in alerts if item["severity"] == "low")
+    impacted_sources = ", ".join(sorted({str(item["source_id"]) for item in alerts[:5]}))
+    message = (
+        f"{workspace}: freshness risk detected. "
+        f"{high_count} high / {medium_count} medium / {low_count} low alerts. "
+        f"Impacted sources: {impacted_sources or 'n/a'}."
+    )
+    if high_count > 0:
+        st.error(message)
+    elif medium_count > 0:
+        st.warning(message)
+    else:
+        st.info(message)
 
 
 st.title("Modular Macro Research Platform")
@@ -84,6 +107,7 @@ view = st.sidebar.selectbox(
     ],
 )
 render_source_alert_banner()
+render_workspace_freshness_badge(view)
 
 if view == "Global Macro Monitor":
     st.subheader("Global Macro Monitor")
