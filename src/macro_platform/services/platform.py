@@ -6,6 +6,7 @@ import zipfile
 from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from uuid import uuid4
@@ -148,6 +149,29 @@ class PlatformService:
         self.report_job_run_repo = ReportJobRunRepository(self.database)
         self.release_freshness_snapshot_repo = ReleaseFreshnessSnapshotRepository(self.database)
         self.series_repo.sync(list(self.series_map.values()))
+
+    def _normalize_owner_scope_filter(self, owner_scope: Literal["all", "shared", "private"] = "all") -> str | None:
+        if owner_scope == "all":
+            return None
+        return owner_scope
+
+    def _enforce_shared_mutation_policy(
+        self,
+        *,
+        entity_label: str,
+        entity_id: str,
+        existing_scope: str,
+        incoming_scope: str | None = None,
+        allow_shared_mutation: bool = False,
+    ) -> None:
+        if existing_scope != "shared":
+            return
+        if incoming_scope == "private":
+            raise ValueError(f"{entity_label} '{entity_id}' cannot demote owner_scope from shared to private.")
+        if not allow_shared_mutation:
+            raise PermissionError(
+                f"{entity_label} '{entity_id}' is shared and requires allow_shared_mutation=true for updates."
+            )
 
     def search_series(
         self,
@@ -2703,8 +2727,8 @@ class PlatformService:
                     )
         return created
 
-    def list_watchlists(self) -> list[Watchlist]:
-        return self.watchlist_repo.list_saved()
+    def list_watchlists(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[Watchlist]:
+        return self.watchlist_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
 
     def get_watchlist(self, watchlist_id: str) -> Watchlist:
         watchlist = self.watchlist_repo.get(watchlist_id)
@@ -2712,11 +2736,20 @@ class PlatformService:
             raise KeyError(watchlist_id)
         return watchlist
 
-    def save_watchlist(self, watchlist: Watchlist) -> Watchlist:
+    def save_watchlist(self, watchlist: Watchlist, allow_shared_mutation: bool = False) -> Watchlist:
+        existing = self.watchlist_repo.get(watchlist.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Watchlist",
+                entity_id=watchlist.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=watchlist.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         return self.watchlist_repo.save(watchlist)
 
-    def list_saved_screens(self) -> list[SavedScreen]:
-        return self.saved_screen_repo.list_saved()
+    def list_saved_screens(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[SavedScreen]:
+        return self.saved_screen_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
 
     def get_saved_screen(self, screen_id: str) -> SavedScreen:
         screen = self.saved_screen_repo.get(screen_id)
@@ -2724,11 +2757,20 @@ class PlatformService:
             raise KeyError(screen_id)
         return screen
 
-    def save_saved_screen(self, screen: SavedScreen) -> SavedScreen:
+    def save_saved_screen(self, screen: SavedScreen, allow_shared_mutation: bool = False) -> SavedScreen:
+        existing = self.saved_screen_repo.get(screen.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Saved screen",
+                entity_id=screen.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=screen.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         return self.saved_screen_repo.save(screen)
 
-    def list_cross_country_presets(self) -> list[CrossCountryPreset]:
-        rows = self.cross_country_preset_repo.list_saved()
+    def list_cross_country_presets(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[CrossCountryPreset]:
+        rows = self.cross_country_preset_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
         rows.sort(key=lambda item: (not item.is_default, item.name.lower()))
         return rows
 
@@ -2738,14 +2780,14 @@ class PlatformService:
             raise KeyError(preset_id)
         return preset
 
-    def get_default_cross_country_preset(self) -> CrossCountryPreset | None:
-        rows = self.list_cross_country_presets()
+    def get_default_cross_country_preset(self, owner_scope: Literal["all", "shared", "private"] = "all") -> CrossCountryPreset | None:
+        rows = self.list_cross_country_presets(owner_scope=owner_scope)
         if not rows:
             return None
         default_rows = [item for item in rows if item.is_default]
         return default_rows[0] if default_rows else rows[0]
 
-    def save_cross_country_preset(self, preset: CrossCountryPreset) -> CrossCountryPreset:
+    def save_cross_country_preset(self, preset: CrossCountryPreset, allow_shared_mutation: bool = False) -> CrossCountryPreset:
         preset.name = preset.name.strip()
         if not preset.name:
             raise ValueError("name must be non-empty.")
@@ -2758,6 +2800,15 @@ class PlatformService:
             raise ValueError("factor_weights includes unsupported keys.")
         if any(float(value) < 0 for value in preset.factor_weights.values()):
             raise ValueError("factor_weights values must be non-negative.")
+        existing_preset = self.cross_country_preset_repo.get(preset.id)
+        if existing_preset is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Cross-country preset",
+                entity_id=preset.id,
+                existing_scope=existing_preset.owner_scope,
+                incoming_scope=preset.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         self._validate_cross_country_preset_name_uniqueness(name=preset.name, current_preset_id=preset.id)
         existing = self.list_cross_country_presets()
         if preset.is_default:
@@ -2772,8 +2823,14 @@ class PlatformService:
         saved = self.cross_country_preset_repo.save(preset)
         return saved
 
-    def set_default_cross_country_preset(self, preset_id: str) -> CrossCountryPreset:
+    def set_default_cross_country_preset(self, preset_id: str, allow_shared_mutation: bool = False) -> CrossCountryPreset:
         target = self.get_cross_country_preset(preset_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Cross-country preset",
+            entity_id=preset_id,
+            existing_scope=target.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
         rows = self.list_cross_country_presets()
         for item in rows:
             if item.id == target.id:
@@ -2783,8 +2840,14 @@ class PlatformService:
             self.cross_country_preset_repo.save(item)
         return self.get_cross_country_preset(preset_id)
 
-    def delete_cross_country_preset(self, preset_id: str) -> None:
+    def delete_cross_country_preset(self, preset_id: str, allow_shared_mutation: bool = False) -> None:
         target = self.get_cross_country_preset(preset_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Cross-country preset",
+            entity_id=preset_id,
+            existing_scope=target.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
         self.cross_country_preset_repo.delete(preset_id)
         rows = self.list_cross_country_presets()
         if target.is_default and rows and not any(item.is_default for item in rows):
@@ -2897,7 +2960,7 @@ class PlatformService:
                         item=item,
                         is_default_override=True if force_first_default and idx == 0 else None,
                     )
-                imported.append(self.save_cross_country_preset(preset))
+                imported.append(self.save_cross_country_preset(preset, allow_shared_mutation=True))
             preferred_default_id = existing_default_id
             if preferred_default_id is None and imported:
                 preferred_default_id = imported[0].id
@@ -3224,11 +3287,13 @@ class PlatformService:
                     completed.append(self.get_report_job(job.id))
         return completed
 
-    def list_dashboards(self) -> list[DashboardConfig]:
-        persisted = self.dashboard_repo.list_saved()
+    def list_dashboards(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[DashboardConfig]:
+        persisted = self.dashboard_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
         merged = {dashboard.id: dashboard for dashboard in DEFAULT_DASHBOARDS}
         for item in persisted:
             merged[item.id] = item
+        if owner_scope != "all":
+            merged = {key: value for key, value in merged.items() if value.owner_scope == owner_scope}
         return list(merged.values())
 
     def get_dashboard(self, dashboard_id: str) -> DashboardConfig:
@@ -3238,7 +3303,16 @@ class PlatformService:
         dashboards = {item.id: item for item in DEFAULT_DASHBOARDS}
         return dashboards[dashboard_id]
 
-    def save_dashboard(self, dashboard: DashboardConfig) -> DashboardConfig:
+    def save_dashboard(self, dashboard: DashboardConfig, allow_shared_mutation: bool = False) -> DashboardConfig:
+        existing = self.dashboard_repo.get(dashboard.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Dashboard",
+                entity_id=dashboard.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=dashboard.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         return self.dashboard_repo.save(dashboard)
 
     def _build_report_section(self, section: ReportTemplateSection) -> ReportSnapshotSection:

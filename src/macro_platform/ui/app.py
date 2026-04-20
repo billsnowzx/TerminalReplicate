@@ -137,8 +137,9 @@ elif view == "Country Dashboard":
 elif view == "Cross Country Comparison":
     st.subheader("Cross Country Comparison")
     default_countries = ["US", "CN", "EA", "JP", "GB", "CA"]
-    presets = service.list_cross_country_presets()
-    default_preset = service.get_default_cross_country_preset()
+    preset_scope = st.selectbox("Preset scope", ["all", "shared", "private"], index=0, key="cross_country_preset_scope")
+    presets = service.list_cross_country_presets(owner_scope=preset_scope)
+    default_preset = service.get_default_cross_country_preset(owner_scope=preset_scope)
     preset_index = 0
     if default_preset is not None:
         preset_ids = [item.id for item in presets]
@@ -236,7 +237,7 @@ elif view == "Cross Country Comparison":
                 notes=preset_notes or None,
                 is_default=(default_preset is None),
             )
-            service.save_cross_country_preset(preset)
+            service.save_cross_country_preset(preset, allow_shared_mutation=True)
             st.success(f"Saved preset: {preset.name}")
             st.rerun()
     else:
@@ -251,17 +252,17 @@ elif view == "Cross Country Comparison":
                         "notes": preset_notes or None,
                     }
                 )
-                service.save_cross_country_preset(updated)
+                service.save_cross_country_preset(updated, allow_shared_mutation=True)
                 st.success(f"Updated preset: {updated.name}")
                 st.rerun()
         with action_mid:
             if st.button("Set as default") and not active_preset.is_default:
-                service.set_default_cross_country_preset(active_preset.id)
+                service.set_default_cross_country_preset(active_preset.id, allow_shared_mutation=True)
                 st.success(f"Set default preset: {active_preset.name}")
                 st.rerun()
         with action_right:
             if st.button("Delete preset"):
-                service.delete_cross_country_preset(active_preset.id)
+                service.delete_cross_country_preset(active_preset.id, allow_shared_mutation=True)
                 st.success(f"Deleted preset: {active_preset.name}")
                 st.rerun()
     if presets:
@@ -1655,7 +1656,8 @@ elif view == "Ops Incidents":
 
 elif view == "Screening Lab":
     st.subheader("Screening Lab")
-    saved_watchlists = service.list_watchlists()
+    watchlist_scope = st.selectbox("Watchlist scope", ["all", "shared", "private"], index=0, key="screening_watchlist_scope")
+    saved_watchlists = service.list_watchlists(owner_scope=watchlist_scope)
     watchlist_options = {"All tracked assets": list(service.market_universe.keys())}
     for watchlist in saved_watchlists:
         watchlist_options[watchlist.name] = watchlist.tickers
@@ -1672,7 +1674,7 @@ elif view == "Screening Lab":
     saved_screen_name = st.text_input("Save current screen as", value="")
     if st.button("Save screen") and saved_screen_name.strip():
         payload = SavedScreen(id=f"screen-{uuid4().hex[:8]}", name=saved_screen_name.strip(), spec=spec)
-        service.save_saved_screen(payload)
+        service.save_saved_screen(payload, allow_shared_mutation=True)
         st.success(f"Saved screen: {payload.name}")
     explain = service.run_screen_explain(spec)
     results = pd.DataFrame(explain.get("ranked_results", []))
@@ -1691,18 +1693,20 @@ elif view == "Research Library":
     left, right = st.columns(2)
     with left:
         st.caption("Watchlists")
+        watchlist_scope = st.selectbox("Watchlist scope filter", ["all", "shared", "private"], index=0, key="research_watchlist_scope")
         name = st.text_input("Watchlist name", value="")
         tickers = st.multiselect("Tickers", options=list(service.market_universe.keys()))
         notes = st.text_area("Notes", value="")
         if st.button("Save watchlist") and name.strip() and tickers:
             watchlist = Watchlist(id=f"watchlist-{uuid4().hex[:8]}", name=name.strip(), tickers=tickers, notes=notes or None)
-            service.save_watchlist(watchlist)
+            service.save_watchlist(watchlist, allow_shared_mutation=True)
             st.success(f"Saved watchlist: {watchlist.name}")
-        watchlists = pd.DataFrame([item.model_dump(mode="json") for item in service.list_watchlists()])
+        watchlists = pd.DataFrame([item.model_dump(mode="json") for item in service.list_watchlists(owner_scope=watchlist_scope)])
         st.dataframe(watchlists, use_container_width=True)
     with right:
         st.caption("Saved screens")
-        saved_screens = pd.DataFrame([item.model_dump(mode="json") for item in service.list_saved_screens()])
+        screen_scope = st.selectbox("Screen scope filter", ["all", "shared", "private"], index=0, key="research_screen_scope")
+        saved_screens = pd.DataFrame([item.model_dump(mode="json") for item in service.list_saved_screens(owner_scope=screen_scope)])
         st.dataframe(saved_screens, use_container_width=True)
 
 elif view == "Portfolio Lab":

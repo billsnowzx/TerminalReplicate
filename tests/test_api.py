@@ -177,6 +177,45 @@ def test_dashboard_persistence_round_trip(client):
     assert fetched.json()["name"] == "Team Layout"
 
 
+def test_dashboard_owner_scope_filter_and_shared_update_guard(client):
+    shared_payload = {
+        "id": "dashboard-shared",
+        "name": "Dashboard Shared",
+        "widgets": [],
+        "filters": {},
+        "owner_scope": "shared",
+        "refresh_policy": "daily",
+    }
+    private_payload = {
+        "id": "dashboard-private",
+        "name": "Dashboard Private",
+        "widgets": [],
+        "filters": {},
+        "owner_scope": "private",
+        "refresh_policy": "manual",
+    }
+    assert client.post("/api/dashboards", json=shared_payload).status_code == 200
+    assert client.post("/api/dashboards", json=private_payload).status_code == 200
+    shared_only = client.get("/api/dashboards", params={"owner_scope": "shared"})
+    private_only = client.get("/api/dashboards", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    blocked_update = client.post(
+        "/api/dashboards",
+        json={**shared_payload, "name": "Dashboard Shared Updated"},
+    )
+    assert blocked_update.status_code == 403
+    allowed_update = client.post(
+        "/api/dashboards",
+        params={"allow_shared_mutation": True},
+        json={**shared_payload, "name": "Dashboard Shared Updated"},
+    )
+    assert allowed_update.status_code == 200
+
+
 def test_observation_query_persists_rows(client):
     response = client.post(
         "/api/observations/query",
@@ -264,6 +303,41 @@ def test_watchlist_persistence_round_trip(client):
     assert fetched.json()["tickers"] == ["SPY", "TLT", "GLD"]
 
 
+def test_watchlist_owner_scope_filter_and_shared_update_guard(client):
+    shared_payload = {
+        "id": "macro-shared",
+        "name": "Macro Shared",
+        "tickers": ["SPY", "TLT"],
+        "owner_scope": "shared",
+    }
+    private_payload = {
+        "id": "macro-private",
+        "name": "Macro Private",
+        "tickers": ["QQQ", "GLD"],
+        "owner_scope": "private",
+    }
+    assert client.post("/api/watchlists", json=shared_payload).status_code == 200
+    assert client.post("/api/watchlists", json=private_payload).status_code == 200
+    shared_only = client.get("/api/watchlists", params={"owner_scope": "shared"})
+    private_only = client.get("/api/watchlists", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    blocked_update = client.post(
+        "/api/watchlists",
+        json={**shared_payload, "tickers": ["SPY", "TLT", "GLD"]},
+    )
+    assert blocked_update.status_code == 403
+    allowed_update = client.post(
+        "/api/watchlists",
+        params={"allow_shared_mutation": True},
+        json={**shared_payload, "tickers": ["SPY", "TLT", "GLD"]},
+    )
+    assert allowed_update.status_code == 200
+
+
 def test_saved_screen_persistence_round_trip(client):
     payload = {
         "id": "momentum-screen",
@@ -283,6 +357,36 @@ def test_saved_screen_persistence_round_trip(client):
     assert fetched.status_code == 200
     assert any(item["id"] == "momentum-screen" for item in listing.json())
     assert fetched.json()["spec"]["universe"] == ["SPY", "QQQ"]
+
+
+def test_saved_screen_owner_scope_filter_and_shared_scope_demotion_blocked(client):
+    shared_payload = {
+        "id": "shared-screen",
+        "name": "Shared Screen",
+        "owner_scope": "shared",
+        "spec": {"universe": ["SPY"], "filters": [], "ranking": "return_63d"},
+    }
+    private_payload = {
+        "id": "private-screen",
+        "name": "Private Screen",
+        "owner_scope": "private",
+        "spec": {"universe": ["QQQ"], "filters": [], "ranking": "return_63d"},
+    }
+    assert client.post("/api/screens/saved", json=shared_payload).status_code == 200
+    assert client.post("/api/screens/saved", json=private_payload).status_code == 200
+    shared_only = client.get("/api/screens/saved", params={"owner_scope": "shared"})
+    private_only = client.get("/api/screens/saved", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    demotion = client.post(
+        "/api/screens/saved",
+        params={"allow_shared_mutation": True},
+        json={**shared_payload, "owner_scope": "private"},
+    )
+    assert demotion.status_code == 400
 
 
 def test_scenario_persistence_round_trip(client):
@@ -502,19 +606,75 @@ def test_cross_country_preset_set_default_and_delete_reassigns_default(client):
     }
     assert client.post("/api/monitors/cross-country/presets", json=first_payload).status_code == 200
     assert client.post("/api/monitors/cross-country/presets", json=second_payload).status_code == 200
-    set_default = client.post("/api/monitors/cross-country/presets/cross-country-default-b/set-default")
+    set_default = client.post(
+        "/api/monitors/cross-country/presets/cross-country-default-b/set-default",
+        params={"allow_shared_mutation": True},
+    )
     assert set_default.status_code == 200
     listing = client.get("/api/monitors/cross-country/presets")
     assert listing.status_code == 200
     by_id = {item["id"]: item for item in listing.json()}
     assert by_id["cross-country-default-b"]["is_default"] is True
     assert by_id["cross-country-default-a"]["is_default"] is False
-    deleted = client.delete("/api/monitors/cross-country/presets/cross-country-default-b")
+    deleted = client.delete(
+        "/api/monitors/cross-country/presets/cross-country-default-b",
+        params={"allow_shared_mutation": True},
+    )
     assert deleted.status_code == 200
     listing_after = client.get("/api/monitors/cross-country/presets")
     assert listing_after.status_code == 200
     by_id_after = {item["id"]: item for item in listing_after.json()}
     assert by_id_after["cross-country-default-a"]["is_default"] is True
+
+
+def test_cross_country_preset_scope_filter_and_shared_mutation_guard(client):
+    shared_payload = {
+        "id": "cross-country-shared-guard",
+        "name": "Shared Guard",
+        "countries": ["US", "EA"],
+        "factor_weights": {
+            "growth": 1.0,
+            "inflation": 1.0,
+            "labor_unemployment": 1.0,
+            "policy_rate": 1.0,
+            "equity_return_63d": 1.0,
+        },
+        "owner_scope": "shared",
+    }
+    private_payload = {
+        "id": "cross-country-private-guard",
+        "name": "Private Guard",
+        "countries": ["US", "CN"],
+        "factor_weights": {
+            "growth": 1.0,
+            "inflation": 0.8,
+            "labor_unemployment": 1.0,
+            "policy_rate": 1.0,
+            "equity_return_63d": 1.0,
+        },
+        "owner_scope": "private",
+    }
+    assert client.post("/api/monitors/cross-country/presets", json=shared_payload).status_code == 200
+    assert client.post("/api/monitors/cross-country/presets", json=private_payload).status_code == 200
+
+    shared_only = client.get("/api/monitors/cross-country/presets", params={"owner_scope": "shared"})
+    private_only = client.get("/api/monitors/cross-country/presets", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    blocked_update = client.post(
+        "/api/monitors/cross-country/presets",
+        json={**shared_payload, "name": "Shared Guard Updated"},
+    )
+    assert blocked_update.status_code == 403
+    allowed_update = client.post(
+        "/api/monitors/cross-country/presets",
+        params={"allow_shared_mutation": True},
+        json={**shared_payload, "name": "Shared Guard Updated"},
+    )
+    assert allowed_update.status_code == 200
 
 
 def test_cross_country_monitor_uses_default_preset_when_no_params(client):

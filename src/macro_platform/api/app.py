@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import date
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -154,8 +155,8 @@ def cross_country_monitor(
 
 
 @app.get("/api/monitors/cross-country/presets")
-def list_cross_country_presets():
-    return [item.model_dump(mode="json") for item in service.list_cross_country_presets()]
+def list_cross_country_presets(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_cross_country_presets(owner_scope=owner_scope)]
 
 
 @app.get("/api/monitors/cross-country/presets/export")
@@ -185,26 +186,41 @@ def get_cross_country_preset(preset_id: str):
 
 
 @app.post("/api/monitors/cross-country/presets")
-def save_cross_country_preset(preset: CrossCountryPreset):
+def save_cross_country_preset(preset: CrossCountryPreset, allow_shared_mutation: bool = False):
     try:
-        return service.save_cross_country_preset(preset).model_dump(mode="json")
+        return service.save_cross_country_preset(
+            preset,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/monitors/cross-country/presets/{preset_id}/set-default")
-def set_default_cross_country_preset(preset_id: str):
+def set_default_cross_country_preset(preset_id: str, allow_shared_mutation: bool = False):
     try:
-        return service.set_default_cross_country_preset(preset_id).model_dump(mode="json")
+        return service.set_default_cross_country_preset(
+            preset_id,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Cross-country preset not found.") from exc
 
 
 @app.delete("/api/monitors/cross-country/presets/{preset_id}")
-def delete_cross_country_preset(preset_id: str):
+def delete_cross_country_preset(preset_id: str, allow_shared_mutation: bool = False):
     try:
-        service.delete_cross_country_preset(preset_id)
+        service.delete_cross_country_preset(
+            preset_id,
+            allow_shared_mutation=allow_shared_mutation,
+        )
         return {"status": "deleted", "id": preset_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Cross-country preset not found.") from exc
 
@@ -885,8 +901,8 @@ def run_screen_explain(spec: ScreenSpec):
 
 
 @app.get("/api/screens/saved")
-def list_saved_screens():
-    return [item.model_dump(mode="json") for item in service.list_saved_screens()]
+def list_saved_screens(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_saved_screens(owner_scope=owner_scope)]
 
 
 @app.get("/api/screens/saved/{screen_id}")
@@ -898,13 +914,18 @@ def get_saved_screen(screen_id: str):
 
 
 @app.post("/api/screens/saved")
-def save_saved_screen(screen: SavedScreen):
-    return service.save_saved_screen(screen).model_dump(mode="json")
+def save_saved_screen(screen: SavedScreen, allow_shared_mutation: bool = False):
+    try:
+        return service.save_saved_screen(screen, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/watchlists")
-def list_watchlists():
-    return [item.model_dump(mode="json") for item in service.list_watchlists()]
+def list_watchlists(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_watchlists(owner_scope=owner_scope)]
 
 
 @app.get("/api/watchlists/{watchlist_id}")
@@ -916,8 +937,13 @@ def get_watchlist(watchlist_id: str):
 
 
 @app.post("/api/watchlists")
-def save_watchlist(watchlist: Watchlist):
-    return service.save_watchlist(watchlist).model_dump(mode="json")
+def save_watchlist(watchlist: Watchlist, allow_shared_mutation: bool = False):
+    try:
+        return service.save_watchlist(watchlist, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/scenarios")
@@ -1075,8 +1101,8 @@ def generate_report_snapshot(template_id: str, name_override: str | None = None)
 
 
 @app.get("/api/dashboards")
-def list_dashboards():
-    return [item.model_dump(mode="json") for item in service.list_dashboards()]
+def list_dashboards(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_dashboards(owner_scope=owner_scope)]
 
 
 @app.get("/api/dashboards/{dashboard_id}")
@@ -1088,5 +1114,10 @@ def get_dashboard(dashboard_id: str):
 
 
 @app.post("/api/dashboards")
-def save_dashboard(dashboard: DashboardConfig):
-    return service.save_dashboard(dashboard).model_dump(mode="json")
+def save_dashboard(dashboard: DashboardConfig, allow_shared_mutation: bool = False):
+    try:
+        return service.save_dashboard(dashboard, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

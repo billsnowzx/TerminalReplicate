@@ -156,9 +156,12 @@ class DashboardRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[DashboardConfig]:
+    def list_saved(self, owner_scope: str | None = None) -> list[DashboardConfig]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(DashboardRecord).order_by(DashboardRecord.id.asc())).scalars().all()
+            statement = select(DashboardRecord).order_by(DashboardRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(DashboardRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [
                 DashboardConfig.model_validate(json.loads(row.payload))
                 for row in rows
@@ -732,9 +735,12 @@ class WatchlistRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[Watchlist]:
+    def list_saved(self, owner_scope: str | None = None) -> list[Watchlist]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(WatchlistRecord).order_by(WatchlistRecord.id.asc())).scalars().all()
+            statement = select(WatchlistRecord).order_by(WatchlistRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(WatchlistRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [Watchlist.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, watchlist_id: str) -> Watchlist | None:
@@ -761,9 +767,12 @@ class SavedScreenRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[SavedScreen]:
+    def list_saved(self, owner_scope: str | None = None) -> list[SavedScreen]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(SavedScreenRecord).order_by(SavedScreenRecord.id.asc())).scalars().all()
+            statement = select(SavedScreenRecord).order_by(SavedScreenRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(SavedScreenRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [SavedScreen.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, screen_id: str) -> SavedScreen | None:
@@ -790,9 +799,12 @@ class CrossCountryPresetRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[CrossCountryPreset]:
+    def list_saved(self, owner_scope: str | None = None) -> list[CrossCountryPreset]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(CrossCountryPresetRecord).order_by(CrossCountryPresetRecord.id.asc())).scalars().all()
+            statement = select(CrossCountryPresetRecord).order_by(CrossCountryPresetRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(CrossCountryPresetRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [CrossCountryPreset.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, preset_id: str) -> CrossCountryPreset | None:
