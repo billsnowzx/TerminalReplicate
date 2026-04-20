@@ -1891,6 +1891,12 @@ elif view == "Portfolio Lab":
     left, right = st.columns(2)
     with left:
         st.caption("Scenario Builder")
+        scenario_scope = st.selectbox(
+            "Scenario scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="portfolio_lab_scenario_scope",
+        )
         scenario_name = st.text_input("Scenario name", value="")
         shock_target = st.selectbox("Shock target", ["asset_class", "ticker"])
         if shock_target == "asset_class":
@@ -1906,12 +1912,66 @@ elif view == "Portfolio Lab":
                 name=scenario_name.strip(),
                 shocks=[ScenarioShock(label="Primary shock", asset_class=asset_class, ticker=ticker, shock_pct=shock_pct)],
             )
-            service.save_scenario(scenario)
+            service.save_scenario(scenario, allow_shared_mutation=True)
             st.success(f"Saved scenario: {scenario.name}")
-        scenarios = pd.DataFrame([item.model_dump(mode="json") for item in service.list_scenarios()])
+        scenario_rows = service.list_scenarios(owner_scope=scenario_scope)
+        scenarios = pd.DataFrame([item.model_dump(mode="json") for item in scenario_rows])
         st.dataframe(scenarios, use_container_width=True)
+        if scenario_rows:
+            selected_scenario_manage = st.selectbox(
+                "Manage scenario",
+                [item.id for item in scenario_rows],
+                key="portfolio_lab_scenario_manage_id",
+                format_func=lambda x: next(item.name for item in scenario_rows if item.id == x),
+            )
+            active_scenario = next(item for item in scenario_rows if item.id == selected_scenario_manage)
+            edit_scenario_name = st.text_input(
+                "Edit scenario name",
+                value=active_scenario.name,
+                key="portfolio_lab_scenario_edit_name",
+            )
+            edit_scenario_scope = st.selectbox(
+                "Edit scenario scope",
+                ["shared", "private"],
+                index=0 if active_scenario.owner_scope == "shared" else 1,
+                key="portfolio_lab_scenario_edit_scope",
+            )
+            allow_scenario_shared = st.checkbox(
+                "Allow shared scenario mutation",
+                value=True,
+                key="portfolio_lab_scenario_allow_shared",
+            )
+            if st.button("Update scenario", key="portfolio_lab_scenario_update"):
+                try:
+                    updated = active_scenario.model_copy(
+                        update={
+                            "name": edit_scenario_name.strip() or active_scenario.name,
+                            "owner_scope": edit_scenario_scope,
+                        }
+                    )
+                    service.save_scenario(updated, allow_shared_mutation=allow_scenario_shared)
+                    st.success(f"Updated scenario: {updated.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete scenario", key="portfolio_lab_scenario_delete"):
+                try:
+                    service.delete_scenario(
+                        selected_scenario_manage,
+                        allow_shared_mutation=allow_scenario_shared,
+                    )
+                    st.success(f"Deleted scenario: {selected_scenario_manage}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Model Portfolio")
+        portfolio_scope = st.selectbox(
+            "Portfolio scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="portfolio_lab_portfolio_scope",
+        )
         portfolio_name = st.text_input("Portfolio name", value="")
         selected_tickers = st.multiselect("Holdings", options=list(service.market_universe.keys()))
         default_weight = round(100 / len(selected_tickers), 2) if selected_tickers else 0.0
@@ -1921,11 +1981,61 @@ elif view == "Portfolio Lab":
                 for ticker in selected_tickers
             ]
             portfolio = ModelPortfolio(id=f"portfolio-{uuid4().hex[:8]}", name=portfolio_name.strip(), holdings=holdings)
-            service.save_model_portfolio(portfolio)
+            service.save_model_portfolio(portfolio, allow_shared_mutation=True)
             st.success(f"Saved portfolio: {portfolio.name}")
-        portfolios = service.list_model_portfolios()
+        portfolios = service.list_model_portfolios(owner_scope=portfolio_scope)
         portfolio_frame = pd.DataFrame([item.model_dump(mode="json") for item in portfolios])
         st.dataframe(portfolio_frame, use_container_width=True)
+        if portfolios:
+            selected_portfolio_manage = st.selectbox(
+                "Manage portfolio",
+                [item.id for item in portfolios],
+                key="portfolio_lab_portfolio_manage_id",
+                format_func=lambda x: next(item.name for item in portfolios if item.id == x),
+            )
+            active_portfolio = next(item for item in portfolios if item.id == selected_portfolio_manage)
+            edit_portfolio_name = st.text_input(
+                "Edit portfolio name",
+                value=active_portfolio.name,
+                key="portfolio_lab_portfolio_edit_name",
+            )
+            edit_portfolio_scope = st.selectbox(
+                "Edit portfolio scope",
+                ["shared", "private"],
+                index=0 if active_portfolio.owner_scope == "shared" else 1,
+                key="portfolio_lab_portfolio_edit_scope",
+            )
+            allow_portfolio_shared = st.checkbox(
+                "Allow shared portfolio mutation",
+                value=True,
+                key="portfolio_lab_portfolio_allow_shared",
+            )
+            if st.button("Update portfolio", key="portfolio_lab_portfolio_update"):
+                try:
+                    updated_portfolio = active_portfolio.model_copy(
+                        update={
+                            "name": edit_portfolio_name.strip() or active_portfolio.name,
+                            "owner_scope": edit_portfolio_scope,
+                        }
+                    )
+                    service.save_model_portfolio(
+                        updated_portfolio,
+                        allow_shared_mutation=allow_portfolio_shared,
+                    )
+                    st.success(f"Updated portfolio: {updated_portfolio.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete portfolio", key="portfolio_lab_portfolio_delete"):
+                try:
+                    service.delete_model_portfolio(
+                        selected_portfolio_manage,
+                        allow_shared_mutation=allow_portfolio_shared,
+                    )
+                    st.success(f"Deleted portfolio: {selected_portfolio_manage}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
 
     st.caption("Portfolio Summary")
     portfolios = service.list_model_portfolios()

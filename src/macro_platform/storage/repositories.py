@@ -847,9 +847,12 @@ class ScenarioRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ScenarioDefinition]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ScenarioDefinition]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ScenarioRecord).order_by(ScenarioRecord.id.asc())).scalars().all()
+            statement = select(ScenarioRecord).order_by(ScenarioRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ScenarioRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ScenarioDefinition.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, scenario_id: str) -> ScenarioDefinition | None:
@@ -871,14 +874,21 @@ class ScenarioRepository:
             )
         return scenario
 
+    def delete(self, scenario_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ScenarioRecord).where(ScenarioRecord.id == scenario_id))
+
 
 class ModelPortfolioRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ModelPortfolio]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ModelPortfolio]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ModelPortfolioRecord).order_by(ModelPortfolioRecord.id.asc())).scalars().all()
+            statement = select(ModelPortfolioRecord).order_by(ModelPortfolioRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ModelPortfolioRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ModelPortfolio.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, portfolio_id: str) -> ModelPortfolio | None:
@@ -899,6 +909,10 @@ class ModelPortfolioRepository:
                 )
             )
         return portfolio
+
+    def delete(self, portfolio_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ModelPortfolioRecord).where(ModelPortfolioRecord.id == portfolio_id))
 
 
 class ReportTemplateRepository:

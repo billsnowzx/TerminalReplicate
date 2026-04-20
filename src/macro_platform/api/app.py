@@ -969,8 +969,8 @@ def delete_watchlist(watchlist_id: str, allow_shared_mutation: bool = False):
 
 
 @app.get("/api/scenarios")
-def list_scenarios():
-    return [item.model_dump(mode="json") for item in service.list_scenarios()]
+def list_scenarios(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_scenarios(owner_scope=owner_scope)]
 
 
 @app.get("/api/scenarios/{scenario_id}")
@@ -982,13 +982,29 @@ def get_scenario(scenario_id: str):
 
 
 @app.post("/api/scenarios")
-def save_scenario(scenario: ScenarioDefinition):
-    return service.save_scenario(scenario).model_dump(mode="json")
+def save_scenario(scenario: ScenarioDefinition, allow_shared_mutation: bool = False):
+    try:
+        return service.save_scenario(scenario, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/scenarios/{scenario_id}")
+def delete_scenario(scenario_id: str, allow_shared_mutation: bool = False):
+    try:
+        service.delete_scenario(scenario_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": scenario_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Scenario not found.") from exc
 
 
 @app.get("/api/portfolios")
-def list_portfolios():
-    return [item.model_dump(mode="json") for item in service.list_model_portfolios()]
+def list_portfolios(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_model_portfolios(owner_scope=owner_scope)]
 
 
 @app.get("/api/portfolios/{portfolio_id}")
@@ -1000,8 +1016,24 @@ def get_portfolio(portfolio_id: str):
 
 
 @app.post("/api/portfolios")
-def save_portfolio(portfolio: ModelPortfolio):
-    return service.save_model_portfolio(portfolio).model_dump(mode="json")
+def save_portfolio(portfolio: ModelPortfolio, allow_shared_mutation: bool = False):
+    try:
+        return service.save_model_portfolio(portfolio, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/portfolios/{portfolio_id}")
+def delete_portfolio(portfolio_id: str, allow_shared_mutation: bool = False):
+    try:
+        service.delete_model_portfolio(portfolio_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": portfolio_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Portfolio not found.") from exc
 
 
 @app.get("/api/portfolios/{portfolio_id}/summary")

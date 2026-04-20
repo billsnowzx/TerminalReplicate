@@ -449,6 +449,48 @@ def test_scenario_persistence_round_trip(client):
     assert fetched.json()["shocks"][0]["asset_class"] == "rates"
 
 
+def test_scenario_owner_scope_filter_and_shared_update_delete_guard(client):
+    shared_payload = {
+        "id": "scenario-shared-guard",
+        "name": "Scenario Shared",
+        "owner_scope": "shared",
+        "shocks": [{"label": "Shock", "asset_class": "equities", "shock_pct": -2.0}],
+    }
+    private_payload = {
+        "id": "scenario-private-guard",
+        "name": "Scenario Private",
+        "owner_scope": "private",
+        "shocks": [{"label": "Shock", "asset_class": "rates", "shock_pct": 1.0}],
+    }
+    assert client.post("/api/scenarios", json=shared_payload).status_code == 200
+    assert client.post("/api/scenarios", json=private_payload).status_code == 200
+    shared_only = client.get("/api/scenarios", params={"owner_scope": "shared"})
+    private_only = client.get("/api/scenarios", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    blocked_update = client.post(
+        "/api/scenarios",
+        json={**shared_payload, "name": "Scenario Shared Updated"},
+    )
+    assert blocked_update.status_code == 403
+    allowed_update = client.post(
+        "/api/scenarios",
+        params={"allow_shared_mutation": True},
+        json={**shared_payload, "name": "Scenario Shared Updated"},
+    )
+    assert allowed_update.status_code == 200
+    blocked_delete = client.delete("/api/scenarios/scenario-shared-guard")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/scenarios/scenario-shared-guard",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
+
+
 def test_portfolio_persistence_and_summary(client):
     portfolio_payload = {
         "id": "balanced-macro",
@@ -479,6 +521,50 @@ def test_portfolio_persistence_and_summary(client):
     assert fetched.json()["holdings"][0]["ticker"] == "SPY"
     assert len(summary.json()) == 3
     assert "stressed_return" in summary.json()[0]
+
+
+def test_portfolio_owner_scope_filter_and_shared_update_delete_guard(client):
+    shared_payload = {
+        "id": "portfolio-shared-guard",
+        "name": "Portfolio Shared",
+        "base_currency": "USD",
+        "owner_scope": "shared",
+        "holdings": [{"ticker": "SPY", "weight": 100.0}],
+    }
+    private_payload = {
+        "id": "portfolio-private-guard",
+        "name": "Portfolio Private",
+        "base_currency": "USD",
+        "owner_scope": "private",
+        "holdings": [{"ticker": "TLT", "weight": 100.0}],
+    }
+    assert client.post("/api/portfolios", json=shared_payload).status_code == 200
+    assert client.post("/api/portfolios", json=private_payload).status_code == 200
+    shared_only = client.get("/api/portfolios", params={"owner_scope": "shared"})
+    private_only = client.get("/api/portfolios", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    blocked_update = client.post(
+        "/api/portfolios",
+        json={**shared_payload, "name": "Portfolio Shared Updated"},
+    )
+    assert blocked_update.status_code == 403
+    allowed_update = client.post(
+        "/api/portfolios",
+        params={"allow_shared_mutation": True},
+        json={**shared_payload, "name": "Portfolio Shared Updated"},
+    )
+    assert allowed_update.status_code == 200
+    blocked_delete = client.delete("/api/portfolios/portfolio-shared-guard")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/portfolios/portfolio-shared-guard",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
 
 
 def test_report_template_and_snapshot_generation(client):

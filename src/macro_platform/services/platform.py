@@ -3052,8 +3052,8 @@ class PlatformService:
             notes=item.notes,
         )
 
-    def list_scenarios(self) -> list[ScenarioDefinition]:
-        return self.scenario_repo.list_saved()
+    def list_scenarios(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[ScenarioDefinition]:
+        return self.scenario_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
 
     def get_scenario(self, scenario_id: str) -> ScenarioDefinition:
         scenario = self.scenario_repo.get(scenario_id)
@@ -3061,11 +3061,32 @@ class PlatformService:
             raise KeyError(scenario_id)
         return scenario
 
-    def save_scenario(self, scenario: ScenarioDefinition) -> ScenarioDefinition:
+    def save_scenario(self, scenario: ScenarioDefinition, allow_shared_mutation: bool = False) -> ScenarioDefinition:
+        existing = self.scenario_repo.get(scenario.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Scenario",
+                entity_id=scenario.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=scenario.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         return self.scenario_repo.save(scenario)
 
-    def list_model_portfolios(self) -> list[ModelPortfolio]:
-        return self.portfolio_repo.list_saved()
+    def delete_scenario(self, scenario_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.scenario_repo.get(scenario_id)
+        if existing is None:
+            raise KeyError(scenario_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Scenario",
+            entity_id=scenario_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.scenario_repo.delete(scenario_id)
+
+    def list_model_portfolios(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[ModelPortfolio]:
+        return self.portfolio_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
 
     def get_model_portfolio(self, portfolio_id: str) -> ModelPortfolio:
         portfolio = self.portfolio_repo.get(portfolio_id)
@@ -3073,8 +3094,29 @@ class PlatformService:
             raise KeyError(portfolio_id)
         return portfolio
 
-    def save_model_portfolio(self, portfolio: ModelPortfolio) -> ModelPortfolio:
+    def save_model_portfolio(self, portfolio: ModelPortfolio, allow_shared_mutation: bool = False) -> ModelPortfolio:
+        existing = self.portfolio_repo.get(portfolio.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Model portfolio",
+                entity_id=portfolio.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=portfolio.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         return self.portfolio_repo.save(portfolio)
+
+    def delete_model_portfolio(self, portfolio_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.portfolio_repo.get(portfolio_id)
+        if existing is None:
+            raise KeyError(portfolio_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Model portfolio",
+            entity_id=portfolio_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.portfolio_repo.delete(portfolio_id)
 
     def get_portfolio_summary(
         self,
