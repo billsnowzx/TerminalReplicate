@@ -2748,6 +2748,18 @@ class PlatformService:
             )
         return self.watchlist_repo.save(watchlist)
 
+    def delete_watchlist(self, watchlist_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.watchlist_repo.get(watchlist_id)
+        if existing is None:
+            raise KeyError(watchlist_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Watchlist",
+            entity_id=watchlist_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.watchlist_repo.delete(watchlist_id)
+
     def list_saved_screens(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[SavedScreen]:
         return self.saved_screen_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
 
@@ -2768,6 +2780,18 @@ class PlatformService:
                 allow_shared_mutation=allow_shared_mutation,
             )
         return self.saved_screen_repo.save(screen)
+
+    def delete_saved_screen(self, screen_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.saved_screen_repo.get(screen_id)
+        if existing is None:
+            raise KeyError(screen_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Saved screen",
+            entity_id=screen_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.saved_screen_repo.delete(screen_id)
 
     def list_cross_country_presets(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[CrossCountryPreset]:
         rows = self.cross_country_preset_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
@@ -3314,6 +3338,18 @@ class PlatformService:
                 allow_shared_mutation=allow_shared_mutation,
             )
         return self.dashboard_repo.save(dashboard)
+
+    def delete_dashboard(self, dashboard_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.dashboard_repo.get(dashboard_id)
+        if existing is None:
+            raise KeyError(dashboard_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Dashboard",
+            entity_id=dashboard_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.dashboard_repo.delete(dashboard_id)
 
     def _build_report_section(self, section: ReportTemplateSection) -> ReportSnapshotSection:
         if section.kind == "global_monitor":

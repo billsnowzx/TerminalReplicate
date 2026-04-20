@@ -187,6 +187,10 @@ class DashboardRepository:
             )
         return dashboard
 
+    def delete(self, dashboard_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(DashboardRecord).where(DashboardRecord.id == dashboard_id))
+
 
 class AssetPriceRepository:
     def __init__(self, database: Database) -> None:
@@ -762,6 +766,10 @@ class WatchlistRepository:
             )
         return watchlist
 
+    def delete(self, watchlist_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(WatchlistRecord).where(WatchlistRecord.id == watchlist_id))
+
 
 class SavedScreenRepository:
     def __init__(self, database: Database) -> None:
@@ -793,6 +801,10 @@ class SavedScreenRepository:
                 )
             )
         return screen
+
+    def delete(self, screen_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(SavedScreenRecord).where(SavedScreenRecord.id == screen_id))
 
 
 class CrossCountryPresetRepository:

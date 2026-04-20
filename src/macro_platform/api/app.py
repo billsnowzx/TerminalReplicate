@@ -923,6 +923,17 @@ def save_saved_screen(screen: SavedScreen, allow_shared_mutation: bool = False):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.delete("/api/screens/saved/{screen_id}")
+def delete_saved_screen(screen_id: str, allow_shared_mutation: bool = False):
+    try:
+        service.delete_saved_screen(screen_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": screen_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Saved screen not found.") from exc
+
+
 @app.get("/api/watchlists")
 def list_watchlists(owner_scope: Literal["all", "shared", "private"] = "all"):
     return [item.model_dump(mode="json") for item in service.list_watchlists(owner_scope=owner_scope)]
@@ -944,6 +955,17 @@ def save_watchlist(watchlist: Watchlist, allow_shared_mutation: bool = False):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/watchlists/{watchlist_id}")
+def delete_watchlist(watchlist_id: str, allow_shared_mutation: bool = False):
+    try:
+        service.delete_watchlist(watchlist_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": watchlist_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Watchlist not found.") from exc
 
 
 @app.get("/api/scenarios")
@@ -1121,3 +1143,14 @@ def save_dashboard(dashboard: DashboardConfig, allow_shared_mutation: bool = Fal
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/dashboards/{dashboard_id}")
+def delete_dashboard(dashboard_id: str, allow_shared_mutation: bool = False):
+    try:
+        service.delete_dashboard(dashboard_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": dashboard_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Dashboard not found.") from exc

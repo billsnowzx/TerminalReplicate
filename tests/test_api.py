@@ -214,6 +214,13 @@ def test_dashboard_owner_scope_filter_and_shared_update_guard(client):
         json={**shared_payload, "name": "Dashboard Shared Updated"},
     )
     assert allowed_update.status_code == 200
+    blocked_delete = client.delete("/api/dashboards/dashboard-shared")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/dashboards/dashboard-shared",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
 
 
 def test_observation_query_persists_rows(client):
@@ -336,6 +343,13 @@ def test_watchlist_owner_scope_filter_and_shared_update_guard(client):
         json={**shared_payload, "tickers": ["SPY", "TLT", "GLD"]},
     )
     assert allowed_update.status_code == 200
+    blocked_delete = client.delete("/api/watchlists/macro-shared")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/watchlists/macro-shared",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
 
 
 def test_saved_screen_persistence_round_trip(client):
@@ -387,6 +401,13 @@ def test_saved_screen_owner_scope_filter_and_shared_scope_demotion_blocked(clien
         json={**shared_payload, "owner_scope": "private"},
     )
     assert demotion.status_code == 400
+    blocked_delete = client.delete("/api/screens/saved/shared-screen")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/screens/saved/shared-screen",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
 
 
 def test_scenario_persistence_round_trip(client):
