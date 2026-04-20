@@ -18,6 +18,7 @@ from macro_platform.domain.models import (
     NotificationRoutingAudit,
     OpsIncident,
     Observation,
+    ReleaseFreshnessSnapshot,
     ReportJob,
     ReportJobRun,
     ReportSnapshot,
@@ -49,6 +50,7 @@ from macro_platform.storage.tables import (
     ReportJobRunRecord,
     ReportSnapshotRecord,
     ReportTemplateRecord,
+    ReleaseFreshnessSnapshotRecord,
     SavedScreenRecord,
     CrossCountryPresetRecord,
     ScenarioRecord,
@@ -991,3 +993,44 @@ class ReportJobRunRepository:
                 )
             )
         return run
+
+
+class ReleaseFreshnessSnapshotRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(
+        self,
+        country: str | None = None,
+        topic: str | None = None,
+        limit: int = 50,
+    ) -> list[ReleaseFreshnessSnapshot]:
+        with self.database.session_scope() as session:
+            statement = select(ReleaseFreshnessSnapshotRecord).order_by(ReleaseFreshnessSnapshotRecord.captured_at.desc())
+            if country:
+                statement = statement.where(ReleaseFreshnessSnapshotRecord.country == country)
+            if topic:
+                statement = statement.where(ReleaseFreshnessSnapshotRecord.topic == topic)
+            statement = statement.limit(limit)
+            rows = session.execute(statement).scalars().all()
+            return [ReleaseFreshnessSnapshot.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, snapshot_id: str) -> ReleaseFreshnessSnapshot | None:
+        with self.database.session_scope() as session:
+            row = session.get(ReleaseFreshnessSnapshotRecord, snapshot_id)
+            if row is None:
+                return None
+            return ReleaseFreshnessSnapshot.model_validate(json.loads(row.payload))
+
+    def save(self, snapshot: ReleaseFreshnessSnapshot) -> ReleaseFreshnessSnapshot:
+        with self.database.session_scope() as session:
+            session.merge(
+                ReleaseFreshnessSnapshotRecord(
+                    id=snapshot.id,
+                    captured_at=snapshot.captured_at,
+                    country=snapshot.country,
+                    topic=snapshot.topic,
+                    payload=json.dumps(snapshot.model_dump(mode="json")),
+                )
+            )
+        return snapshot

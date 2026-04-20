@@ -41,6 +41,7 @@ from macro_platform.domain.models import (
     Observation,
     ObservationQuery,
     PortfolioSummaryRow,
+    ReleaseFreshnessSnapshot,
     ReportJob,
     ReportJobRun,
     ReportSnapshot,
@@ -87,6 +88,7 @@ from macro_platform.storage.repositories import (
     NotificationRoutingAuditRepository,
     OpsIncidentRepository,
     ObservationRepository,
+    ReleaseFreshnessSnapshotRepository,
     ReportJobRepository,
     ReportJobRunRepository,
     ReportSnapshotRepository,
@@ -144,6 +146,7 @@ class PlatformService:
         self.report_snapshot_repo = ReportSnapshotRepository(self.database)
         self.report_job_repo = ReportJobRepository(self.database)
         self.report_job_run_repo = ReportJobRunRepository(self.database)
+        self.release_freshness_snapshot_repo = ReleaseFreshnessSnapshotRepository(self.database)
         self.series_repo.sync(list(self.series_map.values()))
 
     def search_series(
@@ -718,6 +721,132 @@ class PlatformService:
                 )
             )
         return sorted(rows, key=lambda item: (item.freshness_status, item.country, item.title))
+
+    def capture_release_freshness_snapshot(
+        self,
+        country: str | None = None,
+        topic: str | None = None,
+        days: int = 60,
+    ) -> ReleaseFreshnessSnapshot:
+        if days < 1:
+            raise ValueError("days must be at least 1.")
+        rows = self.get_freshness_status(country=country, topic=topic)
+        snapshot = ReleaseFreshnessSnapshot(
+            id=f"release-freshness-{uuid4().hex[:10]}",
+            captured_at=datetime.now(),
+            country=country,
+            topic=topic,
+            days=days,
+            rows=rows,
+        )
+        return self.release_freshness_snapshot_repo.save(snapshot)
+
+    def list_release_freshness_snapshots(
+        self,
+        country: str | None = None,
+        topic: str | None = None,
+        limit: int = 50,
+    ) -> list[ReleaseFreshnessSnapshot]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        return self.release_freshness_snapshot_repo.list_saved(country=country, topic=topic, limit=limit)
+
+    def get_release_freshness_snapshot(self, snapshot_id: str) -> ReleaseFreshnessSnapshot:
+        snapshot = self.release_freshness_snapshot_repo.get(snapshot_id)
+        if snapshot is None:
+            raise KeyError(snapshot_id)
+        return snapshot
+
+    def get_release_freshness_delta(
+        self,
+        country: str | None = None,
+        topic: str | None = None,
+    ) -> dict[str, object]:
+        snapshots = self.list_release_freshness_snapshots(country=country, topic=topic, limit=2)
+        if not snapshots:
+            return {
+                "has_baseline": False,
+                "message": "No release freshness snapshots available.",
+                "current_snapshot_id": None,
+                "previous_snapshot_id": None,
+                "changes": [],
+            }
+        current = snapshots[0]
+        previous = snapshots[1] if len(snapshots) > 1 else None
+        if previous is None:
+            return {
+                "has_baseline": False,
+                "message": "Only one snapshot available. Capture another snapshot to compute deltas.",
+                "current_snapshot_id": current.id,
+                "previous_snapshot_id": None,
+                "changes": [],
+            }
+        prev_map = {item.series_id: item for item in previous.rows}
+        curr_map = {item.series_id: item for item in current.rows}
+        keys = sorted(set(prev_map.keys()) | set(curr_map.keys()))
+        changes: list[dict[str, object]] = []
+        for key in keys:
+            old = prev_map.get(key)
+            new = curr_map.get(key)
+            if old is None and new is not None:
+                changes.append(
+                    {
+                        "series_id": key,
+                        "title": new.title,
+                        "country": new.country,
+                        "change_type": "added",
+                        "previous_freshness": None,
+                        "current_freshness": new.freshness_status,
+                        "previous_expected_next_release": None,
+                        "current_expected_next_release": new.expected_next_release,
+                    }
+                )
+                continue
+            if old is not None and new is None:
+                changes.append(
+                    {
+                        "series_id": key,
+                        "title": old.title,
+                        "country": old.country,
+                        "change_type": "removed",
+                        "previous_freshness": old.freshness_status,
+                        "current_freshness": None,
+                        "previous_expected_next_release": old.expected_next_release,
+                        "current_expected_next_release": None,
+                    }
+                )
+                continue
+            if old is None or new is None:
+                continue
+            if (
+                old.freshness_status != new.freshness_status
+                or old.expected_next_release != new.expected_next_release
+                or old.last_observation_date != new.last_observation_date
+            ):
+                change_type = "freshness_changed" if old.freshness_status != new.freshness_status else "date_updated"
+                changes.append(
+                    {
+                        "series_id": key,
+                        "title": new.title,
+                        "country": new.country,
+                        "change_type": change_type,
+                        "previous_freshness": old.freshness_status,
+                        "current_freshness": new.freshness_status,
+                        "previous_expected_next_release": old.expected_next_release,
+                        "current_expected_next_release": new.expected_next_release,
+                        "previous_last_observation_date": old.last_observation_date,
+                        "current_last_observation_date": new.last_observation_date,
+                    }
+                )
+        return {
+            "has_baseline": True,
+            "current_snapshot_id": current.id,
+            "previous_snapshot_id": previous.id,
+            "current_captured_at": current.captured_at,
+            "previous_captured_at": previous.captured_at,
+            "changes": changes,
+            "change_count": len(changes),
+        }
 
     def list_source_health(
         self,

@@ -103,6 +103,15 @@ class ReleaseEvent(BaseModel):
     release_lag: str | None = None
 
 
+class ReleaseFreshnessSnapshot(BaseModel):
+    id: str
+    captured_at: datetime
+    country: str | None = None
+    topic: str | None = None
+    days: int = 60
+    rows: list[ReleaseEvent] = Field(default_factory=list)
+
+
 class SourceHealth(BaseModel):
     id: str
     source_kind: Literal["macro", "market"]

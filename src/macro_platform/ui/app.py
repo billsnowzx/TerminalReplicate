@@ -371,6 +371,31 @@ elif view == "Release Calendar":
         )
     st.caption("Release alerts")
     st.dataframe(alerts, use_container_width=True)
+    st.caption("Release freshness snapshots")
+    snap_left, snap_right = st.columns(2)
+    with snap_left:
+        if st.button("Capture freshness snapshot"):
+            captured = service.capture_release_freshness_snapshot(country=country, topic=None, days=horizon)
+            st.success(f"Captured snapshot {captured.id} at {captured.captured_at}.")
+    with snap_right:
+        delta = service.get_release_freshness_delta(country=country, topic=None)
+        if delta.get("has_baseline"):
+            st.info(
+                f"Delta vs previous snapshot: {int(delta.get('change_count', 0))} changed series "
+                f"(current={delta.get('current_snapshot_id')}, previous={delta.get('previous_snapshot_id')})."
+            )
+        else:
+            st.caption(str(delta.get("message", "No baseline snapshot yet.")))
+    snapshots = pd.DataFrame(
+        [
+            item.model_dump(mode="json")
+            for item in service.list_release_freshness_snapshots(country=country, topic=None, limit=20)
+        ]
+    )
+    st.dataframe(snapshots, use_container_width=True)
+    delta_changes = pd.DataFrame(delta.get("changes", []))
+    st.caption("Latest snapshot delta")
+    st.dataframe(delta_changes, use_container_width=True)
     left, right = st.columns(2)
     with left:
         st.caption("Expected next releases")

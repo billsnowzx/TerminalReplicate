@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from macro_platform.api import app as api_module
-from macro_platform.domain.models import Observation
+from macro_platform.domain.models import Observation, ReleaseEvent
 from macro_platform.services.platform import PlatformService
 from macro_platform.services.report_scheduler import ReportScheduler
 
@@ -1730,6 +1730,69 @@ def test_calendar_and_freshness_endpoints_return_payloads(client):
         first = alerts.json()[0]
         assert first["alert_type"] in {"stale", "overdue", "due_soon"}
         assert first["severity"] in {"high", "medium", "low"}
+
+
+def test_release_freshness_snapshot_capture_list_get_endpoints(client):
+    captured = client.post("/api/calendar/freshness-snapshots/capture", params={"country": "US", "days": 60})
+    assert captured.status_code == 200
+    payload = captured.json()
+    assert payload["id"].startswith("release-freshness-")
+    listing = client.get("/api/calendar/freshness-snapshots", params={"country": "US", "limit": 10})
+    assert listing.status_code == 200
+    rows = listing.json()
+    assert len(rows) >= 1
+    fetched = client.get(f"/api/calendar/freshness-snapshots/{payload['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["id"] == payload["id"]
+
+
+def test_release_freshness_delta_reports_series_changes_between_snapshots(client):
+    original = api_module.service.get_freshness_status
+    snapshots = [
+        [
+            ReleaseEvent(
+                series_id="fred:CPIAUCSL",
+                title="US CPI All Items",
+                country="US",
+                source="fred",
+                frequency="monthly",
+                last_observation_date=date(2024, 1, 1),
+                expected_next_release=date(2024, 2, 1),
+                freshness_status="fresh",
+            )
+        ],
+        [
+            ReleaseEvent(
+                series_id="fred:CPIAUCSL",
+                title="US CPI All Items",
+                country="US",
+                source="fred",
+                frequency="monthly",
+                last_observation_date=date(2024, 1, 1),
+                expected_next_release=date(2024, 2, 1),
+                freshness_status="stale",
+            )
+        ],
+    ]
+    call_index = {"value": 0}
+
+    def fake_freshness(country=None, topic=None):  # noqa: ANN001
+        idx = min(call_index["value"], len(snapshots) - 1)
+        call_index["value"] += 1
+        return snapshots[idx]
+
+    api_module.service.get_freshness_status = fake_freshness
+    try:
+        assert client.post("/api/calendar/freshness-snapshots/capture", params={"country": "US"}).status_code == 200
+        assert client.post("/api/calendar/freshness-snapshots/capture", params={"country": "US"}).status_code == 200
+        delta = client.get("/api/calendar/freshness-delta", params={"country": "US"})
+    finally:
+        api_module.service.get_freshness_status = original
+    assert delta.status_code == 200
+    payload = delta.json()
+    assert payload["has_baseline"] is True
+    assert payload["change_count"] >= 1
+    assert any(item["change_type"] == "freshness_changed" for item in payload["changes"])
 
 
 def test_source_health_endpoints_reflect_macro_fallback_degradation(client):

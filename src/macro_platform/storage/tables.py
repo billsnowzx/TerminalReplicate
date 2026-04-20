@@ -277,3 +277,13 @@ class ReportJobRunRecord(Base):
     trigger: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ReleaseFreshnessSnapshotRecord(Base):
+    __tablename__ = "release_freshness_snapshots"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    country: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    topic: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)

@@ -232,6 +232,38 @@ def release_alerts(country: str | None = None, days: int = Query(default=14, ge=
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/calendar/freshness-snapshots/capture")
+def capture_release_freshness_snapshot(country: str | None = None, topic: str | None = None, days: int = Query(default=60, ge=1, le=365)):
+    try:
+        return service.capture_release_freshness_snapshot(country=country, topic=topic, days=days).model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/calendar/freshness-snapshots")
+def list_release_freshness_snapshots(country: str | None = None, topic: str | None = None, limit: int = Query(default=50, ge=1, le=500)):
+    try:
+        return [
+            item.model_dump(mode="json")
+            for item in service.list_release_freshness_snapshots(country=country, topic=topic, limit=limit)
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/calendar/freshness-snapshots/{snapshot_id}")
+def get_release_freshness_snapshot(snapshot_id: str):
+    try:
+        return service.get_release_freshness_snapshot(snapshot_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Release freshness snapshot not found.") from exc
+
+
+@app.get("/api/calendar/freshness-delta")
+def get_release_freshness_delta(country: str | None = None, topic: str | None = None):
+    return service.get_release_freshness_delta(country=country, topic=topic)
+
+
 @app.get("/api/status/freshness")
 def freshness_status(country: str | None = None, topic: str | None = None):
     return [item.model_dump(mode="json") for item in service.get_freshness_status(country=country, topic=topic)]
