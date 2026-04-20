@@ -258,6 +258,14 @@ def source_health_alerts(limit: int = Query(default=50, ge=1, le=500)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/status/normalization")
+def normalization_status(max_series_scan: int = Query(default=500, ge=1, le=5000)):
+    try:
+        return service.get_normalization_qa_summary(max_series_scan=max_series_scan)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/status/sources/{source_id:path}/threshold")
 def set_source_stale_threshold(source_id: str, minutes: int = Query(ge=1)):
     try:

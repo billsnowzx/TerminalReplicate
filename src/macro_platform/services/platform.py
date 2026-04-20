@@ -749,6 +749,112 @@ class PlatformService:
             "stale": sum(1 for item in rows if item.is_stale),
         }
 
+    def get_normalization_qa_summary(self, max_series_scan: int = 500) -> dict[str, object]:
+        if max_series_scan < 1:
+            raise ValueError("max_series_scan must be at least 1.")
+        allowed_frequencies = {"daily", "weekly", "monthly", "quarterly", "annual"}
+        rows = list(self.series_map.values())
+        frequency_counts = Counter(item.frequency for item in rows)
+        topic_counts = Counter(item.topic for item in rows)
+        country_counts = Counter(item.country for item in rows)
+        invalid_frequency = [item.id for item in rows if item.frequency not in allowed_frequencies]
+        unitless_series = [item.id for item in rows if not str(item.unit or "").strip()]
+        issues: list[dict[str, object]] = []
+        if invalid_frequency:
+            issues.append(
+                {
+                    "check": "invalid_frequency",
+                    "severity": "high",
+                    "count": len(invalid_frequency),
+                    "samples": invalid_frequency[:10],
+                    "message": "One or more series use unsupported frequency labels.",
+                }
+            )
+        if unitless_series:
+            issues.append(
+                {
+                    "check": "missing_unit",
+                    "severity": "medium",
+                    "count": len(unitless_series),
+                    "samples": unitless_series[:10],
+                    "message": "One or more series are missing a normalized unit.",
+                }
+            )
+
+        scanned_series = 0
+        scanned_observations = 0
+        missing_value_count = 0
+        revision_row_count = 0
+        revision_tz_aware_count = 0
+        revision_tz_naive_count = 0
+        for series_id in sorted(self.series_map.keys())[:max_series_scan]:
+            observations = self.observation_repo.get_range(series_id)
+            if not observations:
+                continue
+            scanned_series += 1
+            scanned_observations += len(observations)
+            missing_value_count += sum(1 for item in observations if item.value is None)
+            for item in observations:
+                if item.vintage_date is not None or item.revision_timestamp is not None:
+                    revision_row_count += 1
+                if item.revision_timestamp is None:
+                    continue
+                if item.revision_timestamp.tzinfo is None:
+                    revision_tz_naive_count += 1
+                else:
+                    revision_tz_aware_count += 1
+
+        missing_value_ratio = (
+            (missing_value_count / scanned_observations) if scanned_observations > 0 else 0.0
+        )
+        if scanned_series == 0:
+            issues.append(
+                {
+                    "check": "observation_scan_empty",
+                    "severity": "low",
+                    "count": 0,
+                    "samples": [],
+                    "message": "No cached observations were available for normalization QA observation checks.",
+                }
+            )
+        elif missing_value_ratio > 0.05:
+            issues.append(
+                {
+                    "check": "missing_values",
+                    "severity": "medium",
+                    "count": missing_value_count,
+                    "samples": [],
+                    "message": "Cached observations include a high missing-value ratio.",
+                }
+            )
+        if revision_tz_aware_count > 0 and revision_tz_naive_count > 0:
+            issues.append(
+                {
+                    "check": "mixed_revision_timestamp_timezone",
+                    "severity": "medium",
+                    "count": revision_tz_aware_count + revision_tz_naive_count,
+                    "samples": [],
+                    "message": "Revision timestamps mix timezone-aware and timezone-naive datetime values.",
+                }
+            )
+
+        return {
+            "series_total": len(rows),
+            "country_count": len(country_counts),
+            "topic_count": len(topic_counts),
+            "frequency_counts": dict(sorted(frequency_counts.items())),
+            "invalid_frequency_count": len(invalid_frequency),
+            "missing_unit_count": len(unitless_series),
+            "scanned_series_count": scanned_series,
+            "scanned_observation_count": scanned_observations,
+            "missing_value_count": missing_value_count,
+            "missing_value_ratio": round(missing_value_ratio, 6),
+            "revision_row_count": revision_row_count,
+            "revision_timezone_aware_count": revision_tz_aware_count,
+            "revision_timezone_naive_count": revision_tz_naive_count,
+            "issues": issues,
+        }
+
     def get_source_health_alerts(self, limit: int = 50) -> list[dict[str, object]]:
         if limit < 1:
             raise ValueError("limit must be at least 1.")

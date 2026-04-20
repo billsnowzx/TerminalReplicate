@@ -112,6 +112,45 @@ def test_source_health_alerts_endpoint_returns_degraded_and_stale_entries(client
     assert alert["severity"] == "medium"
 
 
+def test_normalization_status_endpoint_returns_summary_payload(client):
+    response = client.get("/api/status/normalization", params={"max_series_scan": 200})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["series_total"] >= 1
+    assert "frequency_counts" in payload
+    assert "issues" in payload
+    assert isinstance(payload["issues"], list)
+
+
+def test_normalization_status_flags_missing_value_issue(client):
+    api_module.service.observation_repo.replace_range(
+        "fred:CPIAUCSL",
+        [
+            Observation(
+                series_id="fred:CPIAUCSL",
+                date=date(2024, 1, 1),
+                value=None,
+                vintage_date=date(2024, 1, 2),
+                revision_timestamp=datetime(2024, 1, 2, 10, 0, 0),
+                status="final",
+            ),
+            Observation(
+                series_id="fred:CPIAUCSL",
+                date=date(2024, 2, 1),
+                value=301.0,
+                vintage_date=date(2024, 2, 2),
+                revision_timestamp=datetime(2024, 2, 2, 10, 0, 0, tzinfo=ZoneInfo("UTC")),
+                status="final",
+            ),
+        ],
+    )
+    response = client.get("/api/status/normalization", params={"max_series_scan": 500})
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {item["check"] for item in payload["issues"]}
+    assert "missing_values" in checks
+
+
 def test_prices_endpoint_returns_demo_data(client):
     response = client.get("/api/prices/SPY")
     assert response.status_code == 200

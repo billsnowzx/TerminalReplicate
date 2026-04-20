@@ -411,6 +411,29 @@ elif view == "Data Quality":
             st.dataframe(drilldown, use_container_width=True)
         else:
             st.info("No source registry rows available yet.")
+    with st.expander("Normalization QA", expanded=False):
+        qa = service.get_normalization_qa_summary(max_series_scan=1000)
+        qa_metric_1, qa_metric_2, qa_metric_3, qa_metric_4 = st.columns(4)
+        qa_metric_1.metric("Series Total", int(qa.get("series_total", 0)))
+        qa_metric_2.metric("Invalid Frequency", int(qa.get("invalid_frequency_count", 0)))
+        qa_metric_3.metric("Missing Units", int(qa.get("missing_unit_count", 0)))
+        qa_metric_4.metric("Missing Value Ratio", f"{float(qa.get('missing_value_ratio', 0.0)):.2%}")
+        st.caption("Normalization summary")
+        st.json(
+            {
+                "frequency_counts": qa.get("frequency_counts", {}),
+                "country_count": qa.get("country_count", 0),
+                "topic_count": qa.get("topic_count", 0),
+                "revision_row_count": qa.get("revision_row_count", 0),
+                "revision_timezone_aware_count": qa.get("revision_timezone_aware_count", 0),
+                "revision_timezone_naive_count": qa.get("revision_timezone_naive_count", 0),
+                "scanned_series_count": qa.get("scanned_series_count", 0),
+                "scanned_observation_count": qa.get("scanned_observation_count", 0),
+            }
+        )
+        issues = pd.DataFrame(qa.get("issues", []))
+        st.caption("Normalization issues")
+        st.dataframe(issues, use_container_width=True)
     all_sources = service.list_source_health(limit=500)
     left, right = st.columns(2)
     with left:
