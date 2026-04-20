@@ -1045,8 +1045,8 @@ def get_portfolio_summary(portfolio_id: str, scenario_id: str | None = None):
 
 
 @app.get("/api/reports/templates")
-def list_report_templates():
-    return [item.model_dump(mode="json") for item in service.list_report_templates()]
+def list_report_templates(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_report_templates(owner_scope=owner_scope)]
 
 
 @app.get("/api/reports/templates/{template_id}")
@@ -1058,13 +1058,29 @@ def get_report_template(template_id: str):
 
 
 @app.post("/api/reports/templates")
-def save_report_template(template: ReportTemplate):
-    return service.save_report_template(template).model_dump(mode="json")
+def save_report_template(template: ReportTemplate, allow_shared_mutation: bool = False):
+    try:
+        return service.save_report_template(template, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/reports/templates/{template_id}")
+def delete_report_template(template_id: str, allow_shared_mutation: bool = False):
+    try:
+        service.delete_report_template(template_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": template_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Report template not found.") from exc
 
 
 @app.get("/api/reports/jobs")
-def list_report_jobs():
-    return [item.model_dump(mode="json") for item in service.list_report_jobs()]
+def list_report_jobs(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_report_jobs(owner_scope=owner_scope)]
 
 
 @app.get("/api/reports/jobs/{job_id}")
@@ -1076,11 +1092,26 @@ def get_report_job(job_id: str):
 
 
 @app.post("/api/reports/jobs")
-def save_report_job(job: ReportJob):
+def save_report_job(job: ReportJob, allow_shared_mutation: bool = False):
     try:
-        return service.save_report_job(job).model_dump(mode="json")
+        return service.save_report_job(job, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Report template not found.") from exc
+
+
+@app.delete("/api/reports/jobs/{job_id}")
+def delete_report_job(job_id: str, allow_shared_mutation: bool = False):
+    try:
+        service.delete_report_job(job_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": job_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Report job not found.") from exc
 
 
 @app.post("/api/reports/jobs/{job_id}/run")

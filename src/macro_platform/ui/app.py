@@ -2057,6 +2057,12 @@ elif view == "Report Studio":
     left, right = st.columns(2)
     with left:
         st.caption("Create report template")
+        template_scope = st.selectbox(
+            "Template scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="report_template_scope_filter",
+        )
         template_name = st.text_input("Template name", value="")
         section_kind = st.selectbox(
             "Section type",
@@ -2125,10 +2131,61 @@ elif view == "Report Studio":
                 name=template_name.strip(),
                 sections=[ReportTemplateSection(kind=section_kind, title=section_title.strip(), ref_id=ref_id, params=params)],
             )
-            service.save_report_template(template)
+            service.save_report_template(template, allow_shared_mutation=True)
             st.success(f"Saved report template: {template.name}")
-        templates = pd.DataFrame([item.model_dump(mode="json") for item in service.list_report_templates()])
+        template_rows = service.list_report_templates(owner_scope=template_scope)
+        templates = pd.DataFrame([item.model_dump(mode="json") for item in template_rows])
         st.dataframe(templates, use_container_width=True)
+        if template_rows:
+            selected_template_manage = st.selectbox(
+                "Manage template",
+                [item.id for item in template_rows],
+                key="report_template_manage_id",
+                format_func=lambda item_id: next(item.name for item in template_rows if item.id == item_id),
+            )
+            active_template = next(item for item in template_rows if item.id == selected_template_manage)
+            edit_template_name = st.text_input(
+                "Edit template name",
+                value=active_template.name,
+                key="report_template_edit_name",
+            )
+            edit_template_scope = st.selectbox(
+                "Edit template scope",
+                ["shared", "private"],
+                index=0 if active_template.owner_scope == "shared" else 1,
+                key="report_template_edit_scope",
+            )
+            allow_template_shared = st.checkbox(
+                "Allow shared template mutation",
+                value=True,
+                key="report_template_allow_shared",
+            )
+            if st.button("Update template", key="report_template_update"):
+                try:
+                    updated_template = active_template.model_copy(
+                        update={
+                            "name": edit_template_name.strip() or active_template.name,
+                            "owner_scope": edit_template_scope,
+                        }
+                    )
+                    service.save_report_template(
+                        updated_template,
+                        allow_shared_mutation=allow_template_shared,
+                    )
+                    st.success(f"Updated template: {updated_template.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete template", key="report_template_delete"):
+                try:
+                    service.delete_report_template(
+                        selected_template_manage,
+                        allow_shared_mutation=allow_template_shared,
+                    )
+                    st.success(f"Deleted template: {selected_template_manage}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Generate report snapshot")
         templates = service.list_report_templates()
@@ -2167,6 +2224,12 @@ elif view == "Report Studio":
     templates = service.list_report_templates()
     with jobs_left:
         if templates:
+            job_scope = st.selectbox(
+                "Job scope filter",
+                ["all", "shared", "private"],
+                index=0,
+                key="report_job_scope_filter",
+            )
             job_name = st.text_input("Job name", value="")
             selected_template_for_job = st.selectbox(
                 "Template for job",
@@ -2208,12 +2271,12 @@ elif view == "Report Studio":
                     notification_channel_ids=selected_job_channels,
                     active=active,
                 )
-                service.save_report_job(job)
+                service.save_report_job(job, allow_shared_mutation=True)
                 st.success(f"Saved report job: {job.name}")
         else:
             st.info("Create a report template first.")
     with jobs_right:
-        jobs = service.list_report_jobs()
+        jobs = service.list_report_jobs(owner_scope=st.session_state.get("report_job_scope_filter", "all"))
         jobs_frame = pd.DataFrame([item.model_dump(mode="json") for item in jobs])
         st.dataframe(jobs_frame, use_container_width=True)
         if jobs:
@@ -2225,6 +2288,49 @@ elif view == "Report Studio":
             if st.button("Run selected job now"):
                 completed_job = service.run_report_job(selected_job)
                 st.success(f"Ran job: {completed_job.name}")
+            selected_job_manage = st.selectbox(
+                "Manage job",
+                [item.id for item in jobs],
+                key="report_job_manage_id",
+                format_func=lambda item_id: next(item.name for item in jobs if item.id == item_id),
+            )
+            active_job = next(item for item in jobs if item.id == selected_job_manage)
+            edit_job_name = st.text_input(
+                "Edit job name",
+                value=active_job.name,
+                key="report_job_edit_name",
+            )
+            edit_job_scope = st.selectbox(
+                "Edit job scope",
+                ["shared", "private"],
+                index=0 if active_job.owner_scope == "shared" else 1,
+                key="report_job_edit_scope",
+            )
+            allow_job_shared = st.checkbox(
+                "Allow shared job mutation",
+                value=True,
+                key="report_job_allow_shared",
+            )
+            if st.button("Update job", key="report_job_update"):
+                try:
+                    updated_job = active_job.model_copy(
+                        update={
+                            "name": edit_job_name.strip() or active_job.name,
+                            "owner_scope": edit_job_scope,
+                        }
+                    )
+                    service.save_report_job(updated_job, allow_shared_mutation=allow_job_shared)
+                    st.success(f"Updated job: {updated_job.id}")
+                    st.rerun()
+                except (PermissionError, ValueError, KeyError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete job", key="report_job_delete"):
+                try:
+                    service.delete_report_job(selected_job_manage, allow_shared_mutation=allow_job_shared)
+                    st.success(f"Deleted job: {selected_job_manage}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
             if st.button("Run due jobs"):
                 completed = service.run_due_report_jobs()
                 st.success(f"Ran {len(completed)} due jobs")

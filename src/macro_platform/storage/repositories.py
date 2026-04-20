@@ -919,9 +919,12 @@ class ReportTemplateRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ReportTemplate]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ReportTemplate]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ReportTemplateRecord).order_by(ReportTemplateRecord.id.asc())).scalars().all()
+            statement = select(ReportTemplateRecord).order_by(ReportTemplateRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ReportTemplateRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ReportTemplate.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, template_id: str) -> ReportTemplate | None:
@@ -942,6 +945,10 @@ class ReportTemplateRepository:
                 )
             )
         return template
+
+    def delete(self, template_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ReportTemplateRecord).where(ReportTemplateRecord.id == template_id))
 
 
 class ReportSnapshotRepository:
@@ -977,9 +984,12 @@ class ReportJobRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ReportJob]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ReportJob]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ReportJobRecord).order_by(ReportJobRecord.id.asc())).scalars().all()
+            statement = select(ReportJobRecord).order_by(ReportJobRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ReportJobRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ReportJob.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, job_id: str) -> ReportJob | None:
@@ -1002,6 +1012,10 @@ class ReportJobRepository:
                 )
             )
         return job
+
+    def delete(self, job_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ReportJobRecord).where(ReportJobRecord.id == job_id))
 
 
 class ReportJobRunRepository:

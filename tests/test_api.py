@@ -629,6 +629,103 @@ def test_report_snapshot_export_formats(client):
     assert Path(payload["pptx_js"]).exists()
 
 
+def test_report_template_owner_scope_filter_and_shared_update_delete_guard(client):
+    shared_payload = {
+        "id": "report-template-shared-guard",
+        "name": "Template Shared",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    private_payload = {
+        "id": "report-template-private-guard",
+        "name": "Template Private",
+        "owner_scope": "private",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=shared_payload).status_code == 200
+    assert client.post("/api/reports/templates", json=private_payload).status_code == 200
+    shared_only = client.get("/api/reports/templates", params={"owner_scope": "shared"})
+    private_only = client.get("/api/reports/templates", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    blocked_update = client.post(
+        "/api/reports/templates",
+        json={**shared_payload, "name": "Template Shared Updated"},
+    )
+    assert blocked_update.status_code == 403
+    allowed_update = client.post(
+        "/api/reports/templates",
+        params={"allow_shared_mutation": True},
+        json={**shared_payload, "name": "Template Shared Updated"},
+    )
+    assert allowed_update.status_code == 200
+    blocked_delete = client.delete("/api/reports/templates/report-template-shared-guard")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/reports/templates/report-template-shared-guard",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
+
+
+def test_report_job_owner_scope_filter_and_shared_update_delete_guard(client):
+    template_payload = {
+        "id": "report-template-job-guard",
+        "name": "Template For Jobs",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=template_payload).status_code == 200
+    shared_payload = {
+        "id": "report-job-shared-guard",
+        "name": "Job Shared",
+        "template_id": "report-template-job-guard",
+        "cadence": "manual",
+        "export_formats": ["markdown"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    private_payload = {
+        "id": "report-job-private-guard",
+        "name": "Job Private",
+        "template_id": "report-template-job-guard",
+        "cadence": "manual",
+        "export_formats": ["markdown"],
+        "owner_scope": "private",
+        "active": True,
+    }
+    assert client.post("/api/reports/jobs", json=shared_payload).status_code == 200
+    assert client.post("/api/reports/jobs", json=private_payload).status_code == 200
+    shared_only = client.get("/api/reports/jobs", params={"owner_scope": "shared"})
+    private_only = client.get("/api/reports/jobs", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    blocked_update = client.post(
+        "/api/reports/jobs",
+        json={**shared_payload, "name": "Job Shared Updated"},
+    )
+    assert blocked_update.status_code == 403
+    allowed_update = client.post(
+        "/api/reports/jobs",
+        params={"allow_shared_mutation": True},
+        json={**shared_payload, "name": "Job Shared Updated"},
+    )
+    assert allowed_update.status_code == 200
+    blocked_delete = client.delete("/api/reports/jobs/report-job-shared-guard")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/reports/jobs/report-job-shared-guard",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
+
+
 def test_change_monitor_endpoint_returns_ranked_signals(client):
     response = client.get("/api/monitors/changes", params={"country": "US", "limit": 10})
     assert response.status_code == 200

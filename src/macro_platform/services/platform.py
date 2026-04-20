@@ -3161,8 +3161,8 @@ class PlatformService:
             )
         return [item.model_dump() for item in rows]
 
-    def list_report_templates(self) -> list[ReportTemplate]:
-        return self.report_template_repo.list_saved()
+    def list_report_templates(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[ReportTemplate]:
+        return self.report_template_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
 
     def get_report_template(self, template_id: str) -> ReportTemplate:
         template = self.report_template_repo.get(template_id)
@@ -3170,8 +3170,29 @@ class PlatformService:
             raise KeyError(template_id)
         return template
 
-    def save_report_template(self, template: ReportTemplate) -> ReportTemplate:
+    def save_report_template(self, template: ReportTemplate, allow_shared_mutation: bool = False) -> ReportTemplate:
+        existing = self.report_template_repo.get(template.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Report template",
+                entity_id=template.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=template.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         return self.report_template_repo.save(template)
+
+    def delete_report_template(self, template_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.report_template_repo.get(template_id)
+        if existing is None:
+            raise KeyError(template_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Report template",
+            entity_id=template_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.report_template_repo.delete(template_id)
 
     def list_report_snapshots(self) -> list[ReportSnapshot]:
         return self.report_snapshot_repo.list_saved()
@@ -3225,8 +3246,8 @@ class PlatformService:
             raise ValueError(f"Unsupported export format: {export_format}")
         return self.report_snapshot_repo.save(snapshot)
 
-    def list_report_jobs(self) -> list[ReportJob]:
-        return self.report_job_repo.list_saved()
+    def list_report_jobs(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[ReportJob]:
+        return self.report_job_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
 
     def get_report_job(self, job_id: str) -> ReportJob:
         job = self.report_job_repo.get(job_id)
@@ -3234,7 +3255,16 @@ class PlatformService:
             raise KeyError(job_id)
         return job
 
-    def save_report_job(self, job: ReportJob) -> ReportJob:
+    def save_report_job(self, job: ReportJob, allow_shared_mutation: bool = False) -> ReportJob:
+        existing = self.report_job_repo.get(job.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Report job",
+                entity_id=job.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=job.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         self.get_report_template(job.template_id)
         for channel_id in job.notification_channel_ids:
             self.get_notification_channel(channel_id)
@@ -3246,6 +3276,18 @@ class PlatformService:
                 base_time=datetime.now(),
             )
         return self.report_job_repo.save(job)
+
+    def delete_report_job(self, job_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.report_job_repo.get(job_id)
+        if existing is None:
+            raise KeyError(job_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Report job",
+            entity_id=job_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.report_job_repo.delete(job_id)
 
     def list_report_job_runs(self, job_id: str | None = None, limit: int = 50) -> list[ReportJobRun]:
         return self.report_job_run_repo.list_saved(job_id=job_id, limit=limit)
