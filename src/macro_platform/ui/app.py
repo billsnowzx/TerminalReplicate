@@ -1690,7 +1690,7 @@ elif view == "Screening Lab":
 
 elif view == "Research Library":
     st.subheader("Research Library")
-    left, right = st.columns(2)
+    left, right, extra = st.columns(3)
     with left:
         st.caption("Watchlists")
         watchlist_scope = st.selectbox("Watchlist scope filter", ["all", "shared", "private"], index=0, key="research_watchlist_scope")
@@ -1701,13 +1701,87 @@ elif view == "Research Library":
             watchlist = Watchlist(id=f"watchlist-{uuid4().hex[:8]}", name=name.strip(), tickers=tickers, notes=notes or None)
             service.save_watchlist(watchlist, allow_shared_mutation=True)
             st.success(f"Saved watchlist: {watchlist.name}")
-        watchlists = pd.DataFrame([item.model_dump(mode="json") for item in service.list_watchlists(owner_scope=watchlist_scope)])
+        watchlist_rows = service.list_watchlists(owner_scope=watchlist_scope)
+        watchlists = pd.DataFrame([item.model_dump(mode="json") for item in watchlist_rows])
         st.dataframe(watchlists, use_container_width=True)
+        if watchlist_rows:
+            selected_watchlist = st.selectbox(
+                "Manage watchlist",
+                [item.id for item in watchlist_rows],
+                key="research_watchlist_manage_id",
+                format_func=lambda item_id: next(item.name for item in watchlist_rows if item.id == item_id),
+            )
+            allow_watchlist_shared = st.checkbox(
+                "Allow shared watchlist mutation",
+                value=True,
+                key="research_watchlist_allow_shared",
+            )
+            if st.button("Delete watchlist", key="research_watchlist_delete"):
+                try:
+                    service.delete_watchlist(
+                        selected_watchlist,
+                        allow_shared_mutation=allow_watchlist_shared,
+                    )
+                    st.success(f"Deleted watchlist: {selected_watchlist}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Saved screens")
         screen_scope = st.selectbox("Screen scope filter", ["all", "shared", "private"], index=0, key="research_screen_scope")
-        saved_screens = pd.DataFrame([item.model_dump(mode="json") for item in service.list_saved_screens(owner_scope=screen_scope)])
+        screen_rows = service.list_saved_screens(owner_scope=screen_scope)
+        saved_screens = pd.DataFrame([item.model_dump(mode="json") for item in screen_rows])
         st.dataframe(saved_screens, use_container_width=True)
+        if screen_rows:
+            selected_screen = st.selectbox(
+                "Manage screen",
+                [item.id for item in screen_rows],
+                key="research_screen_manage_id",
+                format_func=lambda item_id: next(item.name for item in screen_rows if item.id == item_id),
+            )
+            allow_screen_shared = st.checkbox(
+                "Allow shared screen mutation",
+                value=True,
+                key="research_screen_allow_shared",
+            )
+            if st.button("Delete screen", key="research_screen_delete"):
+                try:
+                    service.delete_saved_screen(
+                        selected_screen,
+                        allow_shared_mutation=allow_screen_shared,
+                    )
+                    st.success(f"Deleted screen: {selected_screen}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
+    with extra:
+        st.caption("Custom Dashboards")
+        dashboard_scope = st.selectbox("Dashboard scope filter", ["all", "shared", "private"], index=0, key="research_dashboard_scope")
+        dashboard_rows = service.list_persisted_dashboards(owner_scope=dashboard_scope)
+        dashboards_frame = pd.DataFrame([item.model_dump(mode="json") for item in dashboard_rows])
+        st.dataframe(dashboards_frame, use_container_width=True)
+        if dashboard_rows:
+            selected_dashboard = st.selectbox(
+                "Manage dashboard",
+                [item.id for item in dashboard_rows],
+                key="research_dashboard_manage_id",
+                format_func=lambda item_id: next(item.name for item in dashboard_rows if item.id == item_id),
+            )
+            allow_dashboard_shared = st.checkbox(
+                "Allow shared dashboard mutation",
+                value=True,
+                key="research_dashboard_allow_shared",
+            )
+            if st.button("Delete dashboard", key="research_dashboard_delete"):
+                try:
+                    service.delete_dashboard(
+                        selected_dashboard,
+                        allow_shared_mutation=allow_dashboard_shared,
+                    )
+                    st.success(f"Deleted dashboard: {selected_dashboard}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
 
 elif view == "Portfolio Lab":
     st.subheader("Portfolio Lab")

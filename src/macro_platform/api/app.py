@@ -1127,6 +1127,11 @@ def list_dashboards(owner_scope: Literal["all", "shared", "private"] = "all"):
     return [item.model_dump(mode="json") for item in service.list_dashboards(owner_scope=owner_scope)]
 
 
+@app.get("/api/dashboards/custom")
+def list_custom_dashboards(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_persisted_dashboards(owner_scope=owner_scope)]
+
+
 @app.get("/api/dashboards/{dashboard_id}")
 def get_dashboard(dashboard_id: str):
     try:

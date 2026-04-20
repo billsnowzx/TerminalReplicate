@@ -223,6 +223,27 @@ def test_dashboard_owner_scope_filter_and_shared_update_guard(client):
     assert allowed_delete.status_code == 200
 
 
+def test_dashboard_custom_endpoint_lists_only_persisted_dashboards(client):
+    payload = {
+        "id": "dashboard-custom-only",
+        "name": "Custom Only",
+        "widgets": [],
+        "filters": {},
+        "owner_scope": "shared",
+        "refresh_policy": "daily",
+    }
+    assert client.post("/api/dashboards", json=payload).status_code == 200
+    all_dashboards = client.get("/api/dashboards")
+    custom_dashboards = client.get("/api/dashboards/custom")
+    assert all_dashboards.status_code == 200
+    assert custom_dashboards.status_code == 200
+    all_ids = {item["id"] for item in all_dashboards.json()}
+    custom_ids = {item["id"] for item in custom_dashboards.json()}
+    assert "dashboard-custom-only" in custom_ids
+    assert len(all_ids) >= len(custom_ids)
+    assert any(item_id != "dashboard-custom-only" for item_id in all_ids)
+
+
 def test_observation_query_persists_rows(client):
     response = client.post(
         "/api/observations/query",

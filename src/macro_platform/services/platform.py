@@ -3320,6 +3320,9 @@ class PlatformService:
             merged = {key: value for key, value in merged.items() if value.owner_scope == owner_scope}
         return list(merged.values())
 
+    def list_persisted_dashboards(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[DashboardConfig]:
+        return self.dashboard_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
+
     def get_dashboard(self, dashboard_id: str) -> DashboardConfig:
         persisted = self.dashboard_repo.get(dashboard_id)
         if persisted is not None:
