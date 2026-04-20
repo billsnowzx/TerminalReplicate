@@ -542,6 +542,19 @@ def test_cross_country_preset_export_import_preview_workflow(client):
     assert len(defaults) == 1
 
 
+def test_cross_country_monitor_degrades_gracefully_when_single_source_outages(client):
+    original_imf_fetch = api_module.service.imf.fetch_observations
+    api_module.service.imf.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("imf down"))
+    try:
+        response = client.get("/api/monitors/cross-country", params={"countries": "US,CN,EA,JP", "limit": 4})
+    finally:
+        api_module.service.imf.fetch_observations = original_imf_fetch
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 4
+    assert all("composite_score" in item for item in payload)
+
+
 def test_change_monitor_report_section_generation(client):
     template_payload = {
         "id": "change-pack",

@@ -2,9 +2,13 @@ from datetime import date
 
 import pandas as pd
 import pytest
+import requests
 
 from macro_platform.catalog.tracked_universe import TRACKED_SERIES
 from macro_platform.providers.adapters import (
+    BLSProvider,
+    OECDProvider,
+    WorldBankProvider,
     _parse_bls_observations,
     _parse_ecb_observations,
     _parse_imf_observations,
@@ -106,3 +110,68 @@ def test_parse_oecd_observations_raises_for_missing_columns():
     frame = pd.DataFrame({"foo": [1], "bar": [2]})
     with pytest.raises(ValueError, match="OECD payload must include"):
         _parse_oecd_observations(definition, frame, None, None)
+
+
+def test_world_bank_provider_propagates_timeout_error():
+    provider = WorldBankProvider()
+    definition = next(item for item in TRACKED_SERIES if item.id == "world_bank:USA:NY.GDP.MKTP.CD")
+
+    def raise_timeout(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise requests.Timeout("timeout")
+
+    provider.session.get = raise_timeout  # type: ignore[method-assign]
+    with pytest.raises(requests.Timeout):
+        provider.fetch_observations(definition, start_date=date(2020, 1, 1), end_date=date(2024, 12, 31))
+
+
+def test_oecd_provider_raises_for_malformed_csv_payload():
+    provider = OECDProvider()
+    definition = next(item for item in TRACKED_SERIES if item.id == "oecd:US:LRUN64TT")
+
+    class DummyResponse:
+        text = "foo,bar\n1,2\n"
+
+        def raise_for_status(self):
+            return None
+
+    provider.session.get = lambda *args, **kwargs: DummyResponse()  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="OECD payload must include"):
+        provider.fetch_observations(definition, None, None)
+
+
+def test_bls_provider_posts_with_timeout_and_expected_year_bounds():
+    provider = BLSProvider()
+    definition = next(item for item in TRACKED_SERIES if item.id == "bls:CUUR0000SA0")
+    captured: dict[str, object] = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "Results": {
+                    "series": [
+                        {
+                            "seriesID": definition.source_key,
+                            "data": [{"year": "2024", "period": "M01", "value": "300.0"}],
+                        }
+                    ]
+                }
+            }
+
+    def fake_post(url, json, timeout):  # noqa: ANN001
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    provider.session.post = fake_post  # type: ignore[method-assign]
+    rows = provider.fetch_observations(definition, start_date=date(2024, 1, 1), end_date=date(2024, 12, 31))
+    assert len(rows) == 1
+    assert captured["timeout"] == 12
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["seriesid"] == [definition.source_key]
+    assert payload["startyear"] == "2024"
+    assert payload["endyear"] == "2024"
