@@ -1711,11 +1711,51 @@ elif view == "Research Library":
                 key="research_watchlist_manage_id",
                 format_func=lambda item_id: next(item.name for item in watchlist_rows if item.id == item_id),
             )
+            active_watchlist = next(item for item in watchlist_rows if item.id == selected_watchlist)
+            edit_watchlist_name = st.text_input(
+                "Edit watchlist name",
+                value=active_watchlist.name,
+                key="research_watchlist_edit_name",
+            )
+            edit_watchlist_tickers = st.multiselect(
+                "Edit watchlist tickers",
+                options=list(service.market_universe.keys()),
+                default=active_watchlist.tickers,
+                key="research_watchlist_edit_tickers",
+            )
+            edit_watchlist_notes = st.text_area(
+                "Edit watchlist notes",
+                value=active_watchlist.notes or "",
+                key="research_watchlist_edit_notes",
+            )
+            edit_watchlist_scope = st.selectbox(
+                "Edit watchlist scope",
+                ["shared", "private"],
+                index=0 if active_watchlist.owner_scope == "shared" else 1,
+                key="research_watchlist_edit_scope",
+            )
             allow_watchlist_shared = st.checkbox(
                 "Allow shared watchlist mutation",
                 value=True,
                 key="research_watchlist_allow_shared",
             )
+            if st.button("Update watchlist", key="research_watchlist_update"):
+                try:
+                    updated_watchlist = Watchlist(
+                        id=active_watchlist.id,
+                        name=edit_watchlist_name.strip() or active_watchlist.name,
+                        tickers=edit_watchlist_tickers or active_watchlist.tickers,
+                        owner_scope=edit_watchlist_scope,
+                        notes=edit_watchlist_notes or None,
+                    )
+                    service.save_watchlist(
+                        updated_watchlist,
+                        allow_shared_mutation=allow_watchlist_shared,
+                    )
+                    st.success(f"Updated watchlist: {updated_watchlist.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
             if st.button("Delete watchlist", key="research_watchlist_delete"):
                 try:
                     service.delete_watchlist(
@@ -1739,11 +1779,39 @@ elif view == "Research Library":
                 key="research_screen_manage_id",
                 format_func=lambda item_id: next(item.name for item in screen_rows if item.id == item_id),
             )
+            active_screen = next(item for item in screen_rows if item.id == selected_screen)
+            edit_screen_name = st.text_input(
+                "Edit screen name",
+                value=active_screen.name,
+                key="research_screen_edit_name",
+            )
+            edit_screen_scope = st.selectbox(
+                "Edit screen scope",
+                ["shared", "private"],
+                index=0 if active_screen.owner_scope == "shared" else 1,
+                key="research_screen_edit_scope",
+            )
             allow_screen_shared = st.checkbox(
                 "Allow shared screen mutation",
                 value=True,
                 key="research_screen_allow_shared",
             )
+            if st.button("Update screen", key="research_screen_update"):
+                try:
+                    updated_screen = SavedScreen(
+                        id=active_screen.id,
+                        name=edit_screen_name.strip() or active_screen.name,
+                        owner_scope=edit_screen_scope,
+                        spec=active_screen.spec,
+                    )
+                    service.save_saved_screen(
+                        updated_screen,
+                        allow_shared_mutation=allow_screen_shared,
+                    )
+                    st.success(f"Updated screen: {updated_screen.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
             if st.button("Delete screen", key="research_screen_delete"):
                 try:
                     service.delete_saved_screen(
@@ -1767,11 +1835,46 @@ elif view == "Research Library":
                 key="research_dashboard_manage_id",
                 format_func=lambda item_id: next(item.name for item in dashboard_rows if item.id == item_id),
             )
+            active_dashboard = next(item for item in dashboard_rows if item.id == selected_dashboard)
+            edit_dashboard_name = st.text_input(
+                "Edit dashboard name",
+                value=active_dashboard.name,
+                key="research_dashboard_edit_name",
+            )
+            edit_dashboard_scope = st.selectbox(
+                "Edit dashboard scope",
+                ["shared", "private"],
+                index=0 if active_dashboard.owner_scope == "shared" else 1,
+                key="research_dashboard_edit_scope",
+            )
+            edit_dashboard_refresh = st.selectbox(
+                "Edit refresh policy",
+                ["daily", "manual"],
+                index=0 if active_dashboard.refresh_policy == "daily" else 1,
+                key="research_dashboard_edit_refresh",
+            )
             allow_dashboard_shared = st.checkbox(
                 "Allow shared dashboard mutation",
                 value=True,
                 key="research_dashboard_allow_shared",
             )
+            if st.button("Update dashboard", key="research_dashboard_update"):
+                try:
+                    updated_dashboard = active_dashboard.model_copy(
+                        update={
+                            "name": edit_dashboard_name.strip() or active_dashboard.name,
+                            "owner_scope": edit_dashboard_scope,
+                            "refresh_policy": edit_dashboard_refresh,
+                        }
+                    )
+                    service.save_dashboard(
+                        updated_dashboard,
+                        allow_shared_mutation=allow_dashboard_shared,
+                    )
+                    st.success(f"Updated dashboard: {updated_dashboard.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
             if st.button("Delete dashboard", key="research_dashboard_delete"):
                 try:
                     service.delete_dashboard(
