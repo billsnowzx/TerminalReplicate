@@ -346,11 +346,16 @@ def list_source_health_policies(
 
 
 @app.get("/api/status/sources/policies/compare-versions")
-def compare_source_health_policy_versions(left_version_id: str, right_version_id: str):
+def compare_source_health_policy_versions(
+    left_version_id: str,
+    right_version_id: str,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     try:
         return service.compare_source_health_policy_versions(
             left_version_id=left_version_id,
             right_version_id=right_version_id,
+            owner_scope=owner_scope,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version not found.") from exc
@@ -372,19 +377,31 @@ def get_source_health_policy_run(run_id: str):
 
 
 @app.get("/api/status/sources/policies/{policy_id}")
-def get_source_health_policy(policy_id: str):
+def get_source_health_policy(policy_id: str, owner_scope: Literal["all", "shared", "private"] = "all"):
     try:
-        return service.get_source_health_policy(policy_id).model_dump(mode="json")
+        return service.get_source_health_policy(policy_id, owner_scope=owner_scope).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
 
 
 @app.get("/api/status/sources/policies/{policy_id}/versions")
-def list_source_health_policy_versions(policy_id: str, limit: int = 50, action: str | None = None, query: str | None = None):
+def list_source_health_policy_versions(
+    policy_id: str,
+    limit: int = 50,
+    action: str | None = None,
+    query: str | None = None,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     try:
         return [
             item.model_dump(mode="json")
-            for item in service.list_source_health_policy_versions(policy_id=policy_id, limit=limit, action=action, query=query)
+            for item in service.list_source_health_policy_versions(
+                policy_id=policy_id,
+                limit=limit,
+                action=action,
+                query=query,
+                owner_scope=owner_scope,
+            )
         ]
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
@@ -422,27 +439,45 @@ def list_source_health_policy_version_presets(
 
 
 @app.get("/api/status/sources/policies/{policy_id}/version-presets/summary")
-def get_source_health_policy_version_preset_summary(policy_id: str):
+def get_source_health_policy_version_preset_summary(
+    policy_id: str,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     try:
-        return service.get_source_health_policy_version_preset_summary(policy_id=policy_id)
+        return service.get_source_health_policy_version_preset_summary(
+            policy_id=policy_id,
+            owner_scope=owner_scope,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
 
 
 @app.get("/api/status/sources/policies/version-presets/{preset_id}")
-def get_source_health_policy_version_preset(preset_id: str):
+def get_source_health_policy_version_preset(
+    preset_id: str,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     try:
-        return service.get_source_health_policy_version_preset(preset_id).model_dump(mode="json")
+        return service.get_source_health_policy_version_preset(
+            preset_id,
+            owner_scope=owner_scope,
+        ).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
 
 
 @app.get("/api/status/sources/policies/version-presets/{preset_id}/versions")
-def list_source_health_policy_versions_by_preset(preset_id: str):
+def list_source_health_policy_versions_by_preset(
+    preset_id: str,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     try:
         return [
             item.model_dump(mode="json")
-            for item in service.list_source_health_policy_versions_by_preset(preset_id=preset_id)
+            for item in service.list_source_health_policy_versions_by_preset(
+                preset_id=preset_id,
+                owner_scope=owner_scope,
+            )
         ]
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
@@ -575,9 +610,15 @@ def preview_source_health_policy_version_presets_import(policy_id: str, request:
 
 
 @app.get("/api/status/sources/policies/versions/{version_id}")
-def get_source_health_policy_version(version_id: str):
+def get_source_health_policy_version(
+    version_id: str,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     try:
-        return service.get_source_health_policy_version(version_id).model_dump(mode="json")
+        return service.get_source_health_policy_version(
+            version_id,
+            owner_scope=owner_scope,
+        ).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version not found.") from exc
 

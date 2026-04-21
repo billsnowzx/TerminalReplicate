@@ -1123,9 +1123,16 @@ class PlatformService:
             rows = [item for item in rows if item.archived_at is None]
         return rows
 
-    def get_source_health_policy(self, policy_id: str) -> SourceHealthPolicy:
+    def get_source_health_policy(
+        self,
+        policy_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> SourceHealthPolicy:
         policy = self.source_health_policy_repo.get(policy_id)
         if policy is None:
+            raise KeyError(policy_id)
+        normalized_owner_scope = self._normalize_owner_scope_filter(owner_scope)
+        if normalized_owner_scope is not None and policy.owner_scope != normalized_owner_scope:
             raise KeyError(policy_id)
         return policy
 
@@ -1224,8 +1231,9 @@ class PlatformService:
         limit: int = 50,
         action: str | None = None,
         query: str | None = None,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[SourceHealthPolicyVersion]:
-        self.get_source_health_policy(policy_id)
+        self.get_source_health_policy(policy_id, owner_scope=owner_scope)
         rows = self.source_health_policy_version_repo.list_saved(policy_id=policy_id, limit=max(limit * 3, limit))
         if action:
             rows = [row for row in rows if row.action == action]
@@ -1290,13 +1298,18 @@ class PlatformService:
         rows = sorted(rows, key=key_fn, reverse=order == "desc")
         return rows[offset : offset + limit]
 
-    def get_source_health_policy_version_preset_summary(self, policy_id: str) -> dict[str, object]:
+    def get_source_health_policy_version_preset_summary(
+        self,
+        policy_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> dict[str, object]:
         rows = self.list_source_health_policy_version_presets(
             policy_id=policy_id,
             limit=1000,
             offset=0,
             sort_by="name",
             order="asc",
+            owner_scope=owner_scope,
         )
         default_preset = next((item for item in rows if item.is_default), None)
         most_used = max(rows, key=lambda item: int(item.usage_count), default=None)
@@ -1318,18 +1331,28 @@ class PlatformService:
     def list_source_health_policy_versions_by_preset(
         self,
         preset_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[SourceHealthPolicyVersion]:
-        preset = self.touch_source_health_policy_version_preset_usage(preset_id)
+        preset = self.get_source_health_policy_version_preset(preset_id, owner_scope=owner_scope)
+        self.touch_source_health_policy_version_preset_usage(preset_id)
         return self.list_source_health_policy_versions(
             policy_id=preset.policy_id,
             limit=int(preset.limit),
             action=preset.action_filter,
             query=preset.query,
+            owner_scope=owner_scope,
         )
 
-    def get_source_health_policy_version_preset(self, preset_id: str) -> SourceHealthPolicyVersionPreset:
+    def get_source_health_policy_version_preset(
+        self,
+        preset_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> SourceHealthPolicyVersionPreset:
         preset = self.source_health_policy_version_preset_repo.get(preset_id)
         if preset is None:
+            raise KeyError(preset_id)
+        normalized_owner_scope = self._normalize_owner_scope_filter(owner_scope)
+        if normalized_owner_scope is not None and preset.owner_scope != normalized_owner_scope:
             raise KeyError(preset_id)
         return preset
 
@@ -1722,19 +1745,25 @@ class PlatformService:
             preferred_preset_id=preferred_default_id,
         )
 
-    def get_source_health_policy_version(self, version_id: str) -> SourceHealthPolicyVersion:
+    def get_source_health_policy_version(
+        self,
+        version_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> SourceHealthPolicyVersion:
         version = self.source_health_policy_version_repo.get(version_id)
         if version is None:
             raise KeyError(version_id)
+        self.get_source_health_policy(version.policy_id, owner_scope=owner_scope)
         return version
 
     def compare_source_health_policy_versions(
         self,
         left_version_id: str,
         right_version_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> dict[str, object]:
-        left_version = self.get_source_health_policy_version(left_version_id)
-        right_version = self.get_source_health_policy_version(right_version_id)
+        left_version = self.get_source_health_policy_version(left_version_id, owner_scope=owner_scope)
+        right_version = self.get_source_health_policy_version(right_version_id, owner_scope=owner_scope)
         if left_version.policy_id != right_version.policy_id:
             raise ValueError("Version comparison requires both versions to belong to the same policy.")
         left_snapshot = left_version.snapshot

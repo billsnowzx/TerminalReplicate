@@ -2685,6 +2685,114 @@ def test_source_health_policy_owner_scope_filter_and_strict_shared_guard(client)
     assert strict_blocked_archive.status_code == 403
 
 
+def test_source_health_policy_direct_reads_respect_owner_scope(client):
+    channel_payload = {
+        "id": "source-policy-direct-scope-drop",
+        "name": "Source Policy Direct Scope Drop",
+        "kind": "file",
+        "target": "source-policy-direct-scope",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    shared_policy = {
+        "id": "source-policy-direct-scope-shared",
+        "name": "Source Policy Direct Scope Shared",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-direct-scope-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    private_policy = {
+        "id": "source-policy-direct-scope-private",
+        "name": "Source Policy Direct Scope Private",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-direct-scope-drop"],
+        "owner_scope": "private",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=shared_policy).status_code == 200
+    assert client.post("/api/status/sources/policies", json=private_policy).status_code == 200
+    assert client.post("/api/status/sources/policies", json={**private_policy, "trigger_on_down": True}).status_code == 200
+
+    private_versions = client.get("/api/status/sources/policies/source-policy-direct-scope-private/versions")
+    assert private_versions.status_code == 200
+    private_version_id = private_versions.json()[0]["id"]
+    shared_versions = client.get("/api/status/sources/policies/source-policy-direct-scope-shared/versions")
+    assert shared_versions.status_code == 200
+    shared_version_id = shared_versions.json()[0]["id"]
+
+    private_preset_payload = {
+        "id": "source-policy-direct-scope-private-preset",
+        "policy_id": "source-policy-direct-scope-private",
+        "name": "Private Direct Preset",
+        "action_filter": "update",
+        "limit": 25,
+        "owner_scope": "private",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=private_preset_payload).status_code == 200
+
+    assert (
+        client.get(
+            "/api/status/sources/policies/source-policy-direct-scope-private",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            "/api/status/sources/policies/source-policy-direct-scope-private/versions",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            f"/api/status/sources/policies/versions/{private_version_id}",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            "/api/status/sources/policies/version-presets/source-policy-direct-scope-private-preset",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            "/api/status/sources/policies/version-presets/source-policy-direct-scope-private-preset/versions",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            "/api/status/sources/policies/compare-versions",
+            params={
+                "left_version_id": shared_version_id,
+                "right_version_id": private_version_id,
+                "owner_scope": "shared",
+            },
+        ).status_code
+        == 404
+    )
+
+
 def test_source_health_policy_archive_restore_keeps_run_history(client):
     channel_payload = {
         "id": "source-policy-archive-drop",
