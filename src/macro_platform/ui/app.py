@@ -1248,7 +1248,15 @@ elif view == "Data Quality":
             ]
         )
         st.dataframe(policies, use_container_width=True)
-        policy_runs = pd.DataFrame([item.model_dump(mode="json") for item in service.list_source_health_policy_runs(limit=50)])
+        policy_runs = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_source_health_policy_runs(
+                    limit=50,
+                    owner_scope=policy_catalog_scope,
+                )
+            ]
+        )
         st.caption("Recent policy runs")
         st.dataframe(policy_runs, use_container_width=True)
     stale_rows = pd.DataFrame(

@@ -2579,6 +2579,69 @@ def test_source_health_policy_run_sends_manual_alert_notification(client):
     assert rows[0]["payload"]["source_health_alert"] is True
 
 
+def test_source_health_policy_run_history_respects_owner_scope(client):
+    channel_payload = {
+        "id": "source-policy-run-scope-drop",
+        "name": "Source Policy Run Scope Drop",
+        "kind": "file",
+        "target": "source-policy-run-scope",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    assert client.post(
+        "/api/observations/query",
+        json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+    ).status_code == 200
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fred down"))
+    try:
+        assert client.post(
+            "/api/observations/query",
+            json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+        ).status_code == 200
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    policy_payload = {
+        "id": "source-policy-run-scope-shared",
+        "name": "Source Policy Run Scope Shared",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": True,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-run-scope-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    assert client.post("/api/status/sources/policies/run").status_code == 200
+    shared_runs = client.get("/api/status/sources/policies/runs", params={"owner_scope": "shared"})
+    assert shared_runs.status_code == 200
+    assert len(shared_runs.json()) >= 1
+    run_id = shared_runs.json()[0]["id"]
+    private_runs = client.get("/api/status/sources/policies/runs", params={"owner_scope": "private"})
+    assert private_runs.status_code == 200
+    assert all(item["id"] != run_id for item in private_runs.json())
+    assert (
+        client.get(
+            f"/api/status/sources/policies/runs/{run_id}",
+            params={"owner_scope": "private"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            f"/api/status/sources/policies/runs/{run_id}",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 200
+    )
+
+
 def test_source_health_policy_can_be_updated_and_deactivated(client):
     channel_payload = {
         "id": "source-policy-edit-drop",

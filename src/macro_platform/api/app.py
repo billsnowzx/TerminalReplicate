@@ -364,14 +364,25 @@ def compare_source_health_policy_versions(
 
 
 @app.get("/api/status/sources/policies/runs")
-def list_source_health_policy_runs(trigger: str | None = None, limit: int = 100):
-    return [item.model_dump(mode="json") for item in service.list_source_health_policy_runs(trigger=trigger, limit=limit)]
+def list_source_health_policy_runs(
+    trigger: str | None = None,
+    limit: int = 100,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
+    return [
+        item.model_dump(mode="json")
+        for item in service.list_source_health_policy_runs(
+            trigger=trigger,
+            limit=limit,
+            owner_scope=owner_scope,
+        )
+    ]
 
 
 @app.get("/api/status/sources/policies/runs/{run_id}")
-def get_source_health_policy_run(run_id: str):
+def get_source_health_policy_run(run_id: str, owner_scope: Literal["all", "shared", "private"] = "all"):
     try:
-        return service.get_source_health_policy_run(run_id).model_dump(mode="json")
+        return service.get_source_health_policy_run(run_id, owner_scope=owner_scope).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy run not found.") from exc
 

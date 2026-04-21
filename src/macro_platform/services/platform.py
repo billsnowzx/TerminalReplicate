@@ -167,6 +167,31 @@ class PlatformService:
         if channel.owner_scope != normalized_owner_scope:
             raise KeyError(channel_id)
 
+    def _source_health_policy_run_matches_owner_scope(
+        self,
+        run: SourceHealthPolicyRun,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+        policy_scope_cache: dict[str, str | None] | None = None,
+    ) -> bool:
+        normalized_owner_scope = self._normalize_owner_scope_filter(owner_scope)
+        if normalized_owner_scope is None:
+            return True
+        cache = policy_scope_cache if policy_scope_cache is not None else {}
+        policy_ids = {
+            str(item.get("policy_id"))
+            for item in run.actions
+            if isinstance(item, dict) and item.get("policy_id")
+        }
+        if not policy_ids:
+            return False
+        for policy_id in policy_ids:
+            if policy_id not in cache:
+                policy = self.source_health_policy_repo.get(policy_id)
+                cache[policy_id] = policy.owner_scope if policy is not None else None
+            if cache.get(policy_id) == normalized_owner_scope:
+                return True
+        return False
+
     def _enforce_shared_mutation_policy(
         self,
         *,
@@ -1216,12 +1241,35 @@ class PlatformService:
         self._record_source_health_policy_version(policy=saved, action="rollback", previous=current_policy)
         return saved
 
-    def list_source_health_policy_runs(self, trigger: str | None = None, limit: int = 100) -> list[SourceHealthPolicyRun]:
-        return self.source_health_policy_run_repo.list_saved(trigger=trigger, limit=limit)
+    def list_source_health_policy_runs(
+        self,
+        trigger: str | None = None,
+        limit: int = 100,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> list[SourceHealthPolicyRun]:
+        runs = self.source_health_policy_run_repo.list_saved(trigger=trigger, limit=limit)
+        if owner_scope == "all":
+            return runs
+        cache: dict[str, str | None] = {}
+        return [
+            run
+            for run in runs
+            if self._source_health_policy_run_matches_owner_scope(
+                run,
+                owner_scope=owner_scope,
+                policy_scope_cache=cache,
+            )
+        ]
 
-    def get_source_health_policy_run(self, run_id: str) -> SourceHealthPolicyRun:
+    def get_source_health_policy_run(
+        self,
+        run_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> SourceHealthPolicyRun:
         run = self.source_health_policy_run_repo.get(run_id)
         if run is None:
+            raise KeyError(run_id)
+        if not self._source_health_policy_run_matches_owner_scope(run, owner_scope=owner_scope):
             raise KeyError(run_id)
         return run
 
