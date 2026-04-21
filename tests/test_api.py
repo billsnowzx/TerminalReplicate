@@ -1139,6 +1139,108 @@ def test_notification_channel_persistence_round_trip(client):
     assert fetched.json()["kind"] == "email"
 
 
+def test_notification_channel_owner_scope_filter_and_delete_guard(client):
+    shared_payload = {
+        "id": "notify-shared-guard",
+        "name": "Notify Shared",
+        "kind": "file",
+        "target": "shared-channel",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    private_payload = {
+        "id": "notify-private-guard",
+        "name": "Notify Private",
+        "kind": "file",
+        "target": "private-channel",
+        "owner_scope": "private",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=shared_payload).status_code == 200
+    assert client.post("/api/notifications/channels", json=private_payload).status_code == 200
+    shared_only = client.get("/api/notifications/channels", params={"owner_scope": "shared"})
+    private_only = client.get("/api/notifications/channels", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    strict_blocked_update = client.post(
+        "/api/notifications/channels",
+        params={"allow_shared_mutation": False},
+        json={**shared_payload, "name": "Notify Shared Updated"},
+    )
+    assert strict_blocked_update.status_code == 403
+    blocked_delete = client.delete("/api/notifications/channels/notify-shared-guard")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/notifications/channels/notify-shared-guard",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
+
+
+def test_change_alert_rule_owner_scope_filter_and_delete_guard(client):
+    channel_payload = {
+        "id": "rule-scope-drop",
+        "name": "Rule Scope Drop",
+        "kind": "file",
+        "target": "rule-scope",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    watchlist_payload = {
+        "id": "rule-scope-watch",
+        "name": "Rule Scope Watch",
+        "tickers": ["TLT"],
+        "owner_scope": "shared",
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    assert client.post("/api/watchlists", json=watchlist_payload).status_code == 200
+    shared_payload = {
+        "id": "rule-shared-guard",
+        "name": "Rule Shared",
+        "entity_type": "asset",
+        "asset_class": "rates",
+        "watchlist_id": "rule-scope-watch",
+        "notification_channel_ids": ["rule-scope-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    private_payload = {
+        "id": "rule-private-guard",
+        "name": "Rule Private",
+        "entity_type": "asset",
+        "asset_class": "rates",
+        "watchlist_id": "rule-scope-watch",
+        "notification_channel_ids": ["rule-scope-drop"],
+        "owner_scope": "private",
+        "active": True,
+    }
+    assert client.post("/api/alerts/rules", json=shared_payload).status_code == 200
+    assert client.post("/api/alerts/rules", json=private_payload).status_code == 200
+    shared_only = client.get("/api/alerts/rules", params={"owner_scope": "shared"})
+    private_only = client.get("/api/alerts/rules", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    strict_blocked_update = client.post(
+        "/api/alerts/rules",
+        params={"allow_shared_mutation": False},
+        json={**shared_payload, "name": "Rule Shared Updated"},
+    )
+    assert strict_blocked_update.status_code == 403
+    blocked_delete = client.delete("/api/alerts/rules/rule-shared-guard")
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/alerts/rules/rule-shared-guard",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
+
+
 def test_notification_test_send_and_retry(client):
     channel_payload = {
         "id": "ops-drop",

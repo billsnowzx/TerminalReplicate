@@ -1987,8 +1987,8 @@ class PlatformService:
             "explanations": traces,
         }
 
-    def list_change_alert_rules(self) -> list[ChangeAlertRule]:
-        return self.change_alert_rule_repo.list_saved()
+    def list_change_alert_rules(self, owner_scope: Literal["all", "shared", "private"] = "all") -> list[ChangeAlertRule]:
+        return self.change_alert_rule_repo.list_saved(owner_scope=self._normalize_owner_scope_filter(owner_scope))
 
     def get_change_alert_rule(self, rule_id: str) -> ChangeAlertRule:
         rule = self.change_alert_rule_repo.get(rule_id)
@@ -1996,12 +1996,33 @@ class PlatformService:
             raise KeyError(rule_id)
         return rule
 
-    def save_change_alert_rule(self, rule: ChangeAlertRule) -> ChangeAlertRule:
+    def save_change_alert_rule(self, rule: ChangeAlertRule, allow_shared_mutation: bool = True) -> ChangeAlertRule:
+        existing = self.change_alert_rule_repo.get(rule.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Change alert rule",
+                entity_id=rule.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=rule.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         if rule.watchlist_id:
             self.get_watchlist(rule.watchlist_id)
         for channel_id in rule.notification_channel_ids:
             self.get_notification_channel(channel_id)
         return self.change_alert_rule_repo.save(rule)
+
+    def delete_change_alert_rule(self, rule_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.change_alert_rule_repo.get(rule_id)
+        if existing is None:
+            raise KeyError(rule_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Change alert rule",
+            entity_id=rule_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.change_alert_rule_repo.delete(rule_id)
 
     def list_change_alert_events(
         self,
@@ -2022,8 +2043,15 @@ class PlatformService:
         event.status = status
         return self.change_alert_event_repo.save(event)
 
-    def list_notification_channels(self, active_only: bool = False) -> list[NotificationChannel]:
-        return self.notification_channel_repo.list_saved(active_only=active_only)
+    def list_notification_channels(
+        self,
+        active_only: bool = False,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> list[NotificationChannel]:
+        return self.notification_channel_repo.list_saved(
+            active_only=active_only,
+            owner_scope=self._normalize_owner_scope_filter(owner_scope),
+        )
 
     def get_notification_channel(self, channel_id: str) -> NotificationChannel:
         channel = self.notification_channel_repo.get(channel_id)
@@ -2031,7 +2059,16 @@ class PlatformService:
             raise KeyError(channel_id)
         return channel
 
-    def save_notification_channel(self, channel: NotificationChannel) -> NotificationChannel:
+    def save_notification_channel(self, channel: NotificationChannel, allow_shared_mutation: bool = True) -> NotificationChannel:
+        existing = self.notification_channel_repo.get(channel.id)
+        if existing is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Notification channel",
+                entity_id=channel.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=channel.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         referenced_channels = set(
             channel.fallback_channel_ids
             + channel.escalation_channel_ids
@@ -2072,22 +2109,35 @@ class PlatformService:
             channel.next_digest_at = None
         return self.notification_channel_repo.save(channel)
 
+    def delete_notification_channel(self, channel_id: str, allow_shared_mutation: bool = False) -> None:
+        existing = self.notification_channel_repo.get(channel_id)
+        if existing is None:
+            raise KeyError(channel_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Notification channel",
+            entity_id=channel_id,
+            existing_scope=existing.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
+        self.notification_channel_repo.delete(channel_id)
+
     def pause_notification_channel(
         self,
         channel_id: str,
         minutes: int,
         reason: str | None = None,
+        allow_shared_mutation: bool = True,
     ) -> NotificationChannel:
         channel = self.get_notification_channel(channel_id)
         channel.paused_until = datetime.now() + timedelta(minutes=max(minutes, 1))
         channel.pause_reason = reason or channel.pause_reason
-        return self.save_notification_channel(channel)
+        return self.save_notification_channel(channel, allow_shared_mutation=allow_shared_mutation)
 
-    def resume_notification_channel(self, channel_id: str) -> NotificationChannel:
+    def resume_notification_channel(self, channel_id: str, allow_shared_mutation: bool = True) -> NotificationChannel:
         channel = self.get_notification_channel(channel_id)
         channel.paused_until = None
         channel.pause_reason = None
-        return self.save_notification_channel(channel)
+        return self.save_notification_channel(channel, allow_shared_mutation=allow_shared_mutation)
 
     def list_notification_deliveries(
         self,

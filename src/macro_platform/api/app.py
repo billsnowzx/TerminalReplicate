@@ -588,8 +588,8 @@ def change_monitor_delta(
 
 
 @app.get("/api/alerts/rules")
-def list_change_alert_rules():
-    return [item.model_dump(mode="json") for item in service.list_change_alert_rules()]
+def list_change_alert_rules(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.list_change_alert_rules(owner_scope=owner_scope)]
 
 
 @app.get("/api/alerts/rules/{rule_id}")
@@ -601,11 +601,24 @@ def get_change_alert_rule(rule_id: str):
 
 
 @app.post("/api/alerts/rules")
-def save_change_alert_rule(rule: ChangeAlertRule):
+def save_change_alert_rule(rule: ChangeAlertRule, allow_shared_mutation: bool = True):
     try:
-        return service.save_change_alert_rule(rule).model_dump(mode="json")
+        return service.save_change_alert_rule(rule, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Alert rule dependency not found.") from exc
+
+
+@app.delete("/api/alerts/rules/{rule_id}")
+def delete_change_alert_rule(rule_id: str, allow_shared_mutation: bool = False):
+    try:
+        service.delete_change_alert_rule(rule_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": rule_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Alert rule not found.") from exc
 
 
 @app.get("/api/alerts/events")
@@ -630,8 +643,11 @@ def update_change_alert_event_status(event_id: str, status: str = Query()):
 
 
 @app.get("/api/notifications/channels")
-def list_notification_channels(active_only: bool = False):
-    return [item.model_dump(mode="json") for item in service.list_notification_channels(active_only=active_only)]
+def list_notification_channels(active_only: bool = False, owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [
+        item.model_dump(mode="json")
+        for item in service.list_notification_channels(active_only=active_only, owner_scope=owner_scope)
+    ]
 
 
 @app.get("/api/notifications/channels/{channel_id}")
@@ -643,27 +659,54 @@ def get_notification_channel(channel_id: str):
 
 
 @app.post("/api/notifications/channels")
-def save_notification_channel(channel: NotificationChannel):
+def save_notification_channel(channel: NotificationChannel, allow_shared_mutation: bool = True):
     try:
-        return service.save_notification_channel(channel).model_dump(mode="json")
+        return service.save_notification_channel(channel, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Referenced notification channel not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/notifications/channels/{channel_id}/pause")
-def pause_notification_channel(channel_id: str, minutes: int = Query(default=60, ge=1), reason: str | None = None):
+@app.delete("/api/notifications/channels/{channel_id}")
+def delete_notification_channel(channel_id: str, allow_shared_mutation: bool = False):
     try:
-        return service.pause_notification_channel(channel_id, minutes=minutes, reason=reason).model_dump(mode="json")
+        service.delete_notification_channel(channel_id, allow_shared_mutation=allow_shared_mutation)
+        return {"status": "deleted", "id": channel_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
+
+
+@app.post("/api/notifications/channels/{channel_id}/pause")
+def pause_notification_channel(
+    channel_id: str,
+    minutes: int = Query(default=60, ge=1),
+    reason: str | None = None,
+    allow_shared_mutation: bool = True,
+):
+    try:
+        return service.pause_notification_channel(
+            channel_id,
+            minutes=minutes,
+            reason=reason,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
 
 
 @app.post("/api/notifications/channels/{channel_id}/resume")
-def resume_notification_channel(channel_id: str):
+def resume_notification_channel(channel_id: str, allow_shared_mutation: bool = True):
     try:
-        return service.resume_notification_channel(channel_id).model_dump(mode="json")
+        return service.resume_notification_channel(channel_id, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
 

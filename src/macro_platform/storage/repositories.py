@@ -269,9 +269,12 @@ class ChangeAlertRuleRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ChangeAlertRule]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ChangeAlertRule]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ChangeAlertRuleRecord).order_by(ChangeAlertRuleRecord.id.asc())).scalars().all()
+            statement = select(ChangeAlertRuleRecord).order_by(ChangeAlertRuleRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ChangeAlertRuleRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ChangeAlertRule.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, rule_id: str) -> ChangeAlertRule | None:
@@ -293,6 +296,10 @@ class ChangeAlertRuleRepository:
                 )
             )
         return rule
+
+    def delete(self, rule_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ChangeAlertRuleRecord).where(ChangeAlertRuleRecord.id == rule_id))
 
 
 class ChangeAlertEventRepository:
@@ -340,11 +347,13 @@ class NotificationChannelRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self, active_only: bool = False) -> list[NotificationChannel]:
+    def list_saved(self, active_only: bool = False, owner_scope: str | None = None) -> list[NotificationChannel]:
         with self.database.session_scope() as session:
             statement = select(NotificationChannelRecord).order_by(NotificationChannelRecord.id.asc())
             if active_only:
                 statement = statement.where(NotificationChannelRecord.active == "true")
+            if owner_scope:
+                statement = statement.where(NotificationChannelRecord.owner_scope == owner_scope)
             rows = session.execute(statement).scalars().all()
             return [NotificationChannel.model_validate(json.loads(row.payload)) for row in rows]
 
@@ -368,6 +377,10 @@ class NotificationChannelRepository:
                 )
             )
         return channel
+
+    def delete(self, channel_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(NotificationChannelRecord).where(NotificationChannelRecord.id == channel_id))
 
 
 class NotificationDeliveryRepository:
