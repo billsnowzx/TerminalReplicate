@@ -570,14 +570,22 @@ class SourceHealthPolicyRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self, active_only: bool = False, limit: int = 200) -> list[SourceHealthPolicy]:
+    def list_saved(
+        self,
+        active_only: bool = False,
+        limit: int = 200,
+        owner_scope: str | None = None,
+    ) -> list[SourceHealthPolicy]:
         with self.database.session_scope() as session:
             statement = select(SourceHealthPolicyRecord).order_by(SourceHealthPolicyRecord.updated_at.desc())
             if active_only:
                 statement = statement.where(SourceHealthPolicyRecord.active == "true")
             statement = statement.limit(limit)
             rows = session.execute(statement).scalars().all()
-            return [SourceHealthPolicy.model_validate(json.loads(row.payload)) for row in rows]
+            policies = [SourceHealthPolicy.model_validate(json.loads(row.payload)) for row in rows]
+            if owner_scope:
+                policies = [item for item in policies if item.owner_scope == owner_scope]
+            return policies
 
     def get(self, policy_id: str) -> SourceHealthPolicy | None:
         with self.database.session_scope() as session:

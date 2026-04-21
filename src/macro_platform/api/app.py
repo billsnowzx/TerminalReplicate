@@ -328,13 +328,19 @@ def set_source_stale_threshold(source_id: str, minutes: int = Query(ge=1)):
 
 
 @app.get("/api/status/sources/policies")
-def list_source_health_policies(active_only: bool = False, include_archived: bool = False, limit: int = 200):
+def list_source_health_policies(
+    active_only: bool = False,
+    include_archived: bool = False,
+    limit: int = 200,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     return [
         item.model_dump(mode="json")
         for item in service.list_source_health_policies(
             active_only=active_only,
             include_archived=include_archived,
             limit=limit,
+            owner_scope=owner_scope,
         )
     ]
 
@@ -577,9 +583,11 @@ def rollback_source_health_policy_version(version_id: str):
 
 
 @app.post("/api/status/sources/policies")
-def save_source_health_policy(policy: SourceHealthPolicy):
+def save_source_health_policy(policy: SourceHealthPolicy, allow_shared_mutation: bool = True):
     try:
-        return service.save_source_health_policy(policy).model_dump(mode="json")
+        return service.save_source_health_policy(policy, allow_shared_mutation=allow_shared_mutation).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
     except ValueError as exc:
@@ -587,17 +595,32 @@ def save_source_health_policy(policy: SourceHealthPolicy):
 
 
 @app.post("/api/status/sources/policies/{policy_id}/archive")
-def archive_source_health_policy(policy_id: str, reason: str | None = None):
+def archive_source_health_policy(
+    policy_id: str,
+    reason: str | None = None,
+    allow_shared_mutation: bool = True,
+):
     try:
-        return service.archive_source_health_policy(policy_id=policy_id, reason=reason).model_dump(mode="json")
+        return service.archive_source_health_policy(
+            policy_id=policy_id,
+            reason=reason,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
 
 
 @app.post("/api/status/sources/policies/{policy_id}/restore")
-def restore_source_health_policy(policy_id: str):
+def restore_source_health_policy(policy_id: str, allow_shared_mutation: bool = True):
     try:
-        return service.restore_source_health_policy(policy_id=policy_id).model_dump(mode="json")
+        return service.restore_source_health_policy(
+            policy_id=policy_id,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
 

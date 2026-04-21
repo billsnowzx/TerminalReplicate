@@ -1100,8 +1100,13 @@ class PlatformService:
         active_only: bool = False,
         include_archived: bool = False,
         limit: int = 200,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[SourceHealthPolicy]:
-        rows = self.source_health_policy_repo.list_saved(active_only=active_only, limit=limit)
+        rows = self.source_health_policy_repo.list_saved(
+            active_only=active_only,
+            limit=limit,
+            owner_scope=self._normalize_owner_scope_filter(owner_scope),
+        )
         if not include_archived:
             rows = [item for item in rows if item.archived_at is None]
         return rows
@@ -1112,8 +1117,16 @@ class PlatformService:
             raise KeyError(policy_id)
         return policy
 
-    def save_source_health_policy(self, policy: SourceHealthPolicy) -> SourceHealthPolicy:
+    def save_source_health_policy(self, policy: SourceHealthPolicy, allow_shared_mutation: bool = True) -> SourceHealthPolicy:
         existing_policy = self.source_health_policy_repo.get(policy.id)
+        if existing_policy is not None:
+            self._enforce_shared_mutation_policy(
+                entity_label="Source health policy",
+                entity_id=policy.id,
+                existing_scope=existing_policy.owner_scope,
+                incoming_scope=policy.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         self._validate_source_health_policy(policy)
         self._verify_source_health_policy_channels(policy)
         self._apply_source_health_policy_threshold(policy)
@@ -1125,8 +1138,19 @@ class PlatformService:
         )
         return saved
 
-    def archive_source_health_policy(self, policy_id: str, reason: str | None = None) -> SourceHealthPolicy:
+    def archive_source_health_policy(
+        self,
+        policy_id: str,
+        reason: str | None = None,
+        allow_shared_mutation: bool = True,
+    ) -> SourceHealthPolicy:
         policy = self.get_source_health_policy(policy_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Source health policy",
+            entity_id=policy_id,
+            existing_scope=policy.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
         previous = policy.model_copy(deep=True)
         policy.active = False
         policy.archived_at = datetime.now()
@@ -1135,8 +1159,14 @@ class PlatformService:
         self._record_source_health_policy_version(policy=saved, action="archive", previous=previous)
         return saved
 
-    def restore_source_health_policy(self, policy_id: str) -> SourceHealthPolicy:
+    def restore_source_health_policy(self, policy_id: str, allow_shared_mutation: bool = True) -> SourceHealthPolicy:
         policy = self.get_source_health_policy(policy_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Source health policy",
+            entity_id=policy_id,
+            existing_scope=policy.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
         previous = policy.model_copy(deep=True)
         policy.archived_at = None
         policy.archived_reason = None

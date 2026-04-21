@@ -2456,6 +2456,67 @@ def test_source_health_policy_can_be_updated_and_deactivated(client):
     assert all(item["id"] != "source-policy-edit-1" for item in active_only.json())
 
 
+def test_source_health_policy_owner_scope_filter_and_strict_shared_guard(client):
+    channel_payload = {
+        "id": "source-policy-scope-drop",
+        "name": "Source Policy Scope Drop",
+        "kind": "file",
+        "target": "source-policy-scope",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    shared_policy = {
+        "id": "source-policy-scope-shared",
+        "name": "Source Policy Scope Shared",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-scope-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    private_policy = {
+        "id": "source-policy-scope-private",
+        "name": "Source Policy Scope Private",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-scope-drop"],
+        "owner_scope": "private",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=shared_policy).status_code == 200
+    assert client.post("/api/status/sources/policies", json=private_policy).status_code == 200
+    shared_only = client.get("/api/status/sources/policies", params={"owner_scope": "shared"})
+    private_only = client.get("/api/status/sources/policies", params={"owner_scope": "private"})
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    strict_blocked_update = client.post(
+        "/api/status/sources/policies",
+        params={"allow_shared_mutation": False},
+        json={**shared_policy, "name": "Source Policy Scope Shared Updated"},
+    )
+    assert strict_blocked_update.status_code == 403
+    strict_blocked_archive = client.post(
+        "/api/status/sources/policies/source-policy-scope-shared/archive",
+        params={"allow_shared_mutation": False},
+    )
+    assert strict_blocked_archive.status_code == 403
+
+
 def test_source_health_policy_archive_restore_keeps_run_history(client):
     channel_payload = {
         "id": "source-policy-archive-drop",
