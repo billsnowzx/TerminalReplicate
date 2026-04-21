@@ -509,7 +509,17 @@ elif view == "Data Quality":
             st.info("No tracked sources yet. Query data first to initialize source records.")
     with right:
         st.caption("Source health policy")
-        policy_catalog = service.list_source_health_policies(include_archived=True, limit=200)
+        policy_catalog_scope = st.selectbox(
+            "Policy scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="source_policy_catalog_scope",
+        )
+        policy_catalog = service.list_source_health_policies(
+            include_archived=True,
+            limit=200,
+            owner_scope=policy_catalog_scope,
+        )
         policy_selector_options = ["Create new"] + [item.id for item in policy_catalog]
         selected_policy_ref = st.selectbox(
             "Policy profile",
@@ -529,6 +539,13 @@ elif view == "Data Quality":
             "Policy name",
             value="" if editing_policy is None else editing_policy.name,
             key=f"source_policy_name_{state_key}",
+        )
+        policy_owner_scope_default = "shared" if editing_policy is None else editing_policy.owner_scope
+        policy_owner_scope = st.selectbox(
+            "Policy owner scope",
+            ["shared", "private"],
+            index=0 if policy_owner_scope_default == "shared" else 1,
+            key=f"source_policy_owner_scope_{state_key}",
         )
         policy_kind_default = "all" if editing_policy is None or editing_policy.source_kind is None else editing_policy.source_kind
         policy_kind = st.selectbox(
@@ -693,6 +710,11 @@ elif view == "Data Quality":
             key=f"source_policy_active_{state_key}",
         )
         save_label = "Save source health policy" if editing_policy is None else "Update source health policy"
+        allow_shared_policy_mutation = st.checkbox(
+            "Allow shared policy mutation",
+            value=True,
+            key=f"source_policy_allow_shared_mutation_{state_key}",
+        )
         if st.button(save_label) and policy_name.strip():
             custom_holidays = []
             parse_ok = True
@@ -744,11 +766,18 @@ elif view == "Data Quality":
                 timezone=policy_timezone.strip() or "UTC",
                 holiday_calendar=holiday_calendar,
                 holiday_dates=custom_holidays,
+                owner_scope=policy_owner_scope,
                 active=policy_active,
                 last_triggered_at=None if editing_policy is None else editing_policy.last_triggered_at,
             )
-            service.save_source_health_policy(policy)
-            st.success(f"Saved policy: {policy.name} ({'active' if policy.active else 'inactive'})")
+            try:
+                service.save_source_health_policy(
+                    policy,
+                    allow_shared_mutation=allow_shared_policy_mutation,
+                )
+                st.success(f"Saved policy: {policy.name} ({'active' if policy.active else 'inactive'})")
+            except PermissionError as exc:
+                st.error(str(exc))
         if editing_policy is not None:
             lifecycle_left, lifecycle_right = st.columns(2)
             with lifecycle_left:
@@ -759,8 +788,15 @@ elif view == "Data Quality":
                         key=f"source_policy_archive_reason_{state_key}",
                     )
                     if st.button("Archive policy", key=f"source_policy_archive_button_{state_key}"):
-                        updated = service.archive_source_health_policy(editing_policy.id, reason=archive_reason or None)
-                        st.success(f"Archived policy: {updated.name}")
+                        try:
+                            updated = service.archive_source_health_policy(
+                                editing_policy.id,
+                                reason=archive_reason or None,
+                                allow_shared_mutation=allow_shared_policy_mutation,
+                            )
+                            st.success(f"Archived policy: {updated.name}")
+                        except PermissionError as exc:
+                            st.error(str(exc))
                 else:
                     st.caption(f"Archived at: {editing_policy.archived_at}")
                     if editing_policy.archived_reason:
@@ -768,8 +804,14 @@ elif view == "Data Quality":
             with lifecycle_right:
                 if editing_policy.archived_at is not None:
                     if st.button("Restore policy", key=f"source_policy_restore_button_{state_key}"):
-                        updated = service.restore_source_health_policy(editing_policy.id)
-                        st.success(f"Restored policy: {updated.name}")
+                        try:
+                            updated = service.restore_source_health_policy(
+                                editing_policy.id,
+                                allow_shared_mutation=allow_shared_policy_mutation,
+                            )
+                            st.success(f"Restored policy: {updated.name}")
+                        except PermissionError as exc:
+                            st.error(str(exc))
             preset_sort_left, preset_sort_right = st.columns(2)
             with preset_sort_left:
                 preset_sort_by = st.selectbox(
@@ -817,6 +859,12 @@ elif view == "Data Quality":
                     value=False,
                     key=f"source_policy_version_preset_only_default_{state_key}",
                 )
+            preset_scope_filter = st.selectbox(
+                "Preset owner scope filter",
+                ["all", "shared", "private"],
+                index=0,
+                key=f"source_policy_version_preset_scope_{state_key}",
+            )
             version_presets = service.list_source_health_policy_version_presets(
                 editing_policy.id,
                 limit=int(preset_limit),
@@ -825,6 +873,7 @@ elif view == "Data Quality":
                 order=preset_sort_order,
                 query=preset_search_query or None,
                 only_default=bool(preset_only_default),
+                owner_scope=preset_scope_filter,
             )
             preset_summary = service.get_source_health_policy_version_preset_summary(editing_policy.id)
             summary_cols = st.columns(4)
@@ -1141,7 +1190,16 @@ elif view == "Data Quality":
             actions = service.run_source_health_policies()
             st.success(f"Executed source health policies: {len(actions)} action(s)")
             st.dataframe(pd.DataFrame(actions), use_container_width=True)
-        policies = pd.DataFrame([item.model_dump(mode="json") for item in service.list_source_health_policies(include_archived=True, limit=200)])
+        policies = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_source_health_policies(
+                    include_archived=True,
+                    limit=200,
+                    owner_scope=policy_catalog_scope,
+                )
+            ]
+        )
         st.dataframe(policies, use_container_width=True)
         policy_runs = pd.DataFrame([item.model_dump(mode="json") for item in service.list_source_health_policy_runs(limit=50)])
         st.caption("Recent policy runs")
