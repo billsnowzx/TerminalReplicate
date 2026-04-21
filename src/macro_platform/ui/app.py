@@ -1265,12 +1265,18 @@ elif view == "Alert Center":
     left, right = st.columns(2)
     with left:
         st.caption("Create alert rule")
+        alert_rule_scope_filter = st.selectbox(
+            "Alert rule scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="alert_rule_scope_filter",
+        )
         rule_name = st.text_input("Rule name", value="")
         entity_type = st.selectbox("Entity type", ["any", "series", "asset"])
         topic = st.selectbox("Topic", ["all", "inflation", "labor", "policy", "rates", "fx", "growth", "markets"])
         country = st.selectbox("Country", ["all", "US", "EA", "CN", "JP", "GB", "CA"])
         asset_class = st.selectbox("Asset class", ["all", "equities", "rates", "commodities", "fx", "crypto"])
-        saved_watchlists = service.list_watchlists()
+        saved_watchlists = service.list_watchlists(owner_scope="all")
         watchlist_options = ["none"] + [item.id for item in saved_watchlists]
         watchlist_id = st.selectbox(
             "Watchlist filter",
@@ -1280,11 +1286,17 @@ elif view == "Alert Center":
         min_significance = st.selectbox("Minimum significance", ["high", "medium", "low"], index=1)
         min_abs_change = st.number_input("Minimum absolute change", min_value=0.0, value=0.0, step=0.1)
         min_pct_change = st.number_input("Minimum percent change", min_value=0.0, value=0.0, step=0.5)
-        channels = service.list_notification_channels(active_only=True)
+        channels = service.list_notification_channels(active_only=True, owner_scope="all")
         selected_channels = st.multiselect(
             "Notification channels",
             options=[item.id for item in channels],
             format_func=lambda x: next(item.name for item in channels if item.id == x),
+        )
+        alert_rule_owner_scope = st.selectbox("Alert rule owner scope", ["shared", "private"], index=0, key="alert_rule_owner_scope")
+        allow_alert_rule_shared_mutation = st.checkbox(
+            "Allow shared alert rule mutation",
+            value=True,
+            key="allow_alert_rule_shared_mutation",
         )
         active = st.checkbox("Active", value=True, key="alert_active")
         if st.button("Save alert rule") and rule_name.strip():
@@ -1300,15 +1312,68 @@ elif view == "Alert Center":
                 min_absolute_change=min_abs_change or None,
                 min_percent_change=min_pct_change or None,
                 notification_channel_ids=selected_channels,
+                owner_scope=alert_rule_owner_scope,
                 active=active,
             )
-            service.save_change_alert_rule(rule)
-            st.success(f"Saved alert rule: {rule.name}")
-        rules = pd.DataFrame([item.model_dump(mode="json") for item in service.list_change_alert_rules()])
+            try:
+                service.save_change_alert_rule(
+                    rule,
+                    allow_shared_mutation=allow_alert_rule_shared_mutation,
+                )
+                st.success(f"Saved alert rule: {rule.name}")
+            except (PermissionError, ValueError) as exc:
+                st.error(str(exc))
+        rule_rows = service.list_change_alert_rules(owner_scope=alert_rule_scope_filter)
+        rules = pd.DataFrame([item.model_dump(mode="json") for item in rule_rows])
         st.dataframe(rules, use_container_width=True)
+        if rule_rows:
+            selected_rule_manage = st.selectbox(
+                "Manage alert rule",
+                [item.id for item in rule_rows],
+                key="alert_rule_manage_id",
+                format_func=lambda item_id: next(item.name for item in rule_rows if item.id == item_id),
+            )
+            active_rule = next(item for item in rule_rows if item.id == selected_rule_manage)
+            edit_alert_rule_scope = st.selectbox(
+                "Edit alert rule scope",
+                ["shared", "private"],
+                index=0 if active_rule.owner_scope == "shared" else 1,
+                key="alert_rule_edit_scope",
+            )
+            edit_alert_rule_active = st.checkbox(
+                "Edit alert rule active",
+                value=active_rule.active,
+                key="alert_rule_edit_active",
+            )
+            if st.button("Update alert rule", key="alert_rule_update"):
+                try:
+                    updated_rule = active_rule.model_copy(
+                        update={
+                            "owner_scope": edit_alert_rule_scope,
+                            "active": edit_alert_rule_active,
+                        }
+                    )
+                    service.save_change_alert_rule(
+                        updated_rule,
+                        allow_shared_mutation=allow_alert_rule_shared_mutation,
+                    )
+                    st.success(f"Updated alert rule: {updated_rule.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete alert rule", key="alert_rule_delete"):
+                try:
+                    service.delete_change_alert_rule(
+                        selected_rule_manage,
+                        allow_shared_mutation=allow_alert_rule_shared_mutation,
+                    )
+                    st.success(f"Deleted alert rule: {selected_rule_manage}")
+                    st.rerun()
+                except (PermissionError, KeyError) as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Alert events")
-        rules = service.list_change_alert_rules()
+        rules = service.list_change_alert_rules(owner_scope=alert_rule_scope_filter)
         selected_rule = st.selectbox(
             "Scan rule",
             ["all"] + [item.id for item in rules],
@@ -1347,7 +1412,13 @@ elif view == "Notification Center":
     left, right = st.columns(2)
     with left:
         st.caption("Create notification channel")
-        existing_channels = service.list_notification_channels()
+        notification_channel_scope_filter = st.selectbox(
+            "Notification channel scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="notification_channel_scope_filter",
+        )
+        existing_channels = service.list_notification_channels(owner_scope="all")
         channel_name = st.text_input("Channel name", value="")
         channel_kind = st.selectbox("Channel kind", ["file", "email", "webhook", "slack"])
         channel_event_types = st.multiselect(
@@ -1457,6 +1528,17 @@ elif view == "Notification Center":
         }
         channel_target = st.text_input("Target", value="", help=target_help[channel_kind])
         channel_notes = st.text_area("Channel notes", value="")
+        channel_owner_scope = st.selectbox(
+            "Notification channel owner scope",
+            ["shared", "private"],
+            index=0,
+            key="notification_channel_owner_scope",
+        )
+        allow_channel_shared_mutation = st.checkbox(
+            "Allow shared notification channel mutation",
+            value=True,
+            key="allow_notification_channel_shared_mutation",
+        )
         channel_active = st.checkbox("Channel active", value=True)
         if st.button("Save notification channel") and channel_name.strip() and channel_target.strip():
             channel = NotificationChannel(
@@ -1495,16 +1577,74 @@ elif view == "Notification Center":
                 digest_limit=digest_limit,
                 digest_status_filter=digest_status_filter,
                 digest_publish_included=digest_publish_included,
+                owner_scope=channel_owner_scope,
                 notes=channel_notes or None,
                 active=channel_active,
             )
-            service.save_notification_channel(channel)
-            st.success(f"Saved notification channel: {channel.name}")
-        channels_frame = pd.DataFrame([item.model_dump(mode="json") for item in service.list_notification_channels()])
+            try:
+                service.save_notification_channel(
+                    channel,
+                    allow_shared_mutation=allow_channel_shared_mutation,
+                )
+                st.success(f"Saved notification channel: {channel.name}")
+            except (PermissionError, ValueError) as exc:
+                st.error(str(exc))
+        channel_rows = service.list_notification_channels(owner_scope=notification_channel_scope_filter)
+        channels_frame = pd.DataFrame([item.model_dump(mode="json") for item in channel_rows])
         st.dataframe(channels_frame, use_container_width=True)
+        if channel_rows:
+            selected_channel_manage = st.selectbox(
+                "Manage notification channel",
+                [item.id for item in channel_rows],
+                key="notification_channel_manage_id",
+                format_func=lambda item_id: next(item.name for item in channel_rows if item.id == item_id),
+            )
+            active_channel = next(item for item in channel_rows if item.id == selected_channel_manage)
+            edit_channel_scope = st.selectbox(
+                "Edit notification channel scope",
+                ["shared", "private"],
+                index=0 if active_channel.owner_scope == "shared" else 1,
+                key="notification_channel_edit_scope",
+            )
+            edit_channel_active = st.checkbox(
+                "Edit notification channel active",
+                value=active_channel.active,
+                key="notification_channel_edit_active",
+            )
+            if st.button("Update notification channel", key="notification_channel_update"):
+                try:
+                    updated_channel = active_channel.model_copy(
+                        update={
+                            "owner_scope": edit_channel_scope,
+                            "active": edit_channel_active,
+                        }
+                    )
+                    service.save_notification_channel(
+                        updated_channel,
+                        allow_shared_mutation=allow_channel_shared_mutation,
+                    )
+                    st.success(f"Updated notification channel: {updated_channel.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete notification channel", key="notification_channel_delete"):
+                try:
+                    service.delete_notification_channel(
+                        selected_channel_manage,
+                        allow_shared_mutation=allow_channel_shared_mutation,
+                    )
+                    st.success(f"Deleted notification channel: {selected_channel_manage}")
+                    st.rerun()
+                except (PermissionError, KeyError) as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Delivery history")
-        channels = service.list_notification_channels()
+        channels = service.list_notification_channels(owner_scope=notification_channel_scope_filter)
+        allow_channel_actions_shared_mutation = st.checkbox(
+            "Allow shared channel mutation for actions",
+            value=True,
+            key="allow_notification_channel_action_shared_mutation",
+        )
         health_window_hours = st.slider("Health window (hours)", min_value=1, max_value=168, value=24, step=1)
         health = pd.DataFrame(
             [
@@ -1592,16 +1732,26 @@ elif view == "Notification Center":
             pause_col, resume_col = st.columns(2)
             with pause_col:
                 if st.button("Pause channel"):
-                    channel = service.pause_notification_channel(
-                        pause_channel_id,
-                        minutes=pause_minutes_action,
-                        reason=pause_reason_action.strip() or None,
-                    )
-                    st.success(f"Paused {channel.name} until {channel.paused_until}")
+                    try:
+                        channel = service.pause_notification_channel(
+                            pause_channel_id,
+                            minutes=pause_minutes_action,
+                            reason=pause_reason_action.strip() or None,
+                            allow_shared_mutation=allow_channel_actions_shared_mutation,
+                        )
+                        st.success(f"Paused {channel.name} until {channel.paused_until}")
+                    except PermissionError as exc:
+                        st.error(str(exc))
             with resume_col:
                 if st.button("Resume channel"):
-                    channel = service.resume_notification_channel(pause_channel_id)
-                    st.success(f"Resumed {channel.name}")
+                    try:
+                        channel = service.resume_notification_channel(
+                            pause_channel_id,
+                            allow_shared_mutation=allow_channel_actions_shared_mutation,
+                        )
+                        st.success(f"Resumed {channel.name}")
+                    except PermissionError as exc:
+                        st.error(str(exc))
             if st.button("Run recovery checks"):
                 recoveries = service.run_notification_channel_recovery()
                 st.success(f"Recovery checks completed: {len(recoveries)} channel action(s)")
