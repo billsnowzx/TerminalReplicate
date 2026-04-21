@@ -1069,12 +1069,14 @@ elif view == "Data Quality":
                 export_text_key = f"source_policy_version_preset_bundle_{state_key}"
                 if export_text_key not in st.session_state:
                     st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
-                        editing_policy.id
+                        editing_policy.id,
+                        owner_scope=preset_scope_filter,
                     ).model_dump_json(indent=2)
                 refresh_export_key = f"source_policy_refresh_version_preset_bundle_{state_key}"
                 if st.button("Refresh preset bundle JSON", key=refresh_export_key):
                     st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
-                        editing_policy.id
+                        editing_policy.id,
+                        owner_scope=preset_scope_filter,
                     ).model_dump_json(indent=2)
                 bundle_json = st.text_area(
                     "Preset bundle JSON",
@@ -1129,7 +1131,8 @@ elif view == "Data Quality":
                         )
                         st.success(f"Imported {len(imported)} preset(s) in {import_mode} mode.")
                         st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
-                            editing_policy.id
+                            editing_policy.id,
+                            owner_scope=preset_scope_filter,
                         ).model_dump_json(indent=2)
                         st.session_state[import_preview_key] = None
                         st.rerun()

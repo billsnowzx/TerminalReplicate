@@ -571,9 +571,15 @@ def rename_source_health_policy_version_preset(
 
 
 @app.get("/api/status/sources/policies/{policy_id}/version-presets/export")
-def export_source_health_policy_version_presets(policy_id: str):
+def export_source_health_policy_version_presets(
+    policy_id: str,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     try:
-        return service.export_source_health_policy_version_presets(policy_id=policy_id).model_dump(mode="json")
+        return service.export_source_health_policy_version_presets(
+            policy_id=policy_id,
+            owner_scope=owner_scope,
+        ).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
 

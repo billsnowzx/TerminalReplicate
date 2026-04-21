@@ -1482,9 +1482,14 @@ class PlatformService:
         self,
         policy_id: str,
         limit: int = 500,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> SourceHealthPolicyVersionPresetExportBundle:
         self.get_source_health_policy(policy_id)
-        presets = self.list_source_health_policy_version_presets(policy_id=policy_id, limit=limit)
+        presets = self.list_source_health_policy_version_presets(
+            policy_id=policy_id,
+            limit=limit,
+            owner_scope=owner_scope,
+        )
         return SourceHealthPolicyVersionPresetExportBundle(
             policy_id=policy_id,
             exported_at=datetime.now(),

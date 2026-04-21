@@ -4391,13 +4391,31 @@ def test_source_health_policy_version_preset_export_and_import_bundle(client):
         "is_default": False,
         "owner_scope": "shared",
     }
+    preset_private = {
+        "id": "source-policy-version-preset-export-3",
+        "policy_id": "source-policy-export-source",
+        "name": "Export Private",
+        "action_filter": "archive",
+        "query": None,
+        "limit": 15,
+        "is_default": False,
+        "owner_scope": "private",
+    }
     assert client.post("/api/status/sources/policies/version-presets", json=preset_one).status_code == 200
     assert client.post("/api/status/sources/policies/version-presets", json=preset_two).status_code == 200
-    exported = client.get("/api/status/sources/policies/source-policy-export-source/version-presets/export")
+    assert client.post("/api/status/sources/policies/version-presets", json=preset_private).status_code == 200
+    exported = client.get(
+        "/api/status/sources/policies/source-policy-export-source/version-presets/export",
+        params={"owner_scope": "shared"},
+    )
     assert exported.status_code == 200
     export_payload = exported.json()
     assert export_payload["policy_id"] == "source-policy-export-source"
     assert len(export_payload["presets"]) == 2
+    assert all(item["owner_scope"] == "shared" for item in export_payload["presets"])
+    exported_all = client.get("/api/status/sources/policies/source-policy-export-source/version-presets/export")
+    assert exported_all.status_code == 200
+    assert len(exported_all.json()["presets"]) == 3
     imported = client.post(
         "/api/status/sources/policies/source-policy-export-target/version-presets/import",
         json={"mode": "replace", "presets": export_payload["presets"]},
