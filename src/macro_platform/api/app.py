@@ -583,9 +583,14 @@ def get_source_health_policy_version(version_id: str):
 
 
 @app.post("/api/status/sources/policies/versions/{version_id}/rollback")
-def rollback_source_health_policy_version(version_id: str):
+def rollback_source_health_policy_version(version_id: str, allow_shared_mutation: bool = True):
     try:
-        return service.rollback_source_health_policy_version(version_id).model_dump(mode="json")
+        return service.rollback_source_health_policy_version(
+            version_id,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version not found.") from exc
     except ValueError as exc:

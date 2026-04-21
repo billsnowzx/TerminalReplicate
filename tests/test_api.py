@@ -2845,6 +2845,48 @@ def test_source_health_policy_version_rollback_restores_snapshot(client):
     assert "rollback" in actions
 
 
+def test_source_health_policy_version_rollback_respects_shared_mutation_guard(client):
+    channel_payload = {
+        "id": "source-policy-rollback-guard-drop",
+        "name": "Source Policy Rollback Guard Drop",
+        "kind": "file",
+        "target": "source-policy-rollback-guard",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    create_payload = {
+        "id": "source-policy-rollback-guard-1",
+        "name": "Source Policy Rollback Guard",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": False,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-rollback-guard-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=create_payload).status_code == 200
+    update_payload = {**create_payload, "trigger_on_down": True}
+    assert client.post("/api/status/sources/policies", json=update_payload).status_code == 200
+    versions = client.get("/api/status/sources/policies/source-policy-rollback-guard-1/versions")
+    assert versions.status_code == 200
+    rows = versions.json()
+    create_version = next(item for item in rows if item["action"] == "create")
+    blocked = client.post(
+        f"/api/status/sources/policies/versions/{create_version['id']}/rollback",
+        params={"allow_shared_mutation": False},
+    )
+    assert blocked.status_code == 403
+    fetched = client.get("/api/status/sources/policies/source-policy-rollback-guard-1")
+    assert fetched.status_code == 200
+    assert fetched.json()["trigger_on_down"] is True
+
+
 def test_source_health_policy_version_compare_reports_field_diffs(client):
     channel_payload = {
         "id": "source-policy-compare-drop",

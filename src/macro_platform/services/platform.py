@@ -1187,9 +1187,19 @@ class PlatformService:
         self._record_source_health_policy_version(policy=saved, action="restore", previous=previous)
         return saved
 
-    def rollback_source_health_policy_version(self, version_id: str) -> SourceHealthPolicy:
+    def rollback_source_health_policy_version(
+        self,
+        version_id: str,
+        allow_shared_mutation: bool = True,
+    ) -> SourceHealthPolicy:
         version = self.get_source_health_policy_version(version_id)
         current_policy = self.get_source_health_policy(version.policy_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Source health policy",
+            entity_id=current_policy.id,
+            existing_scope=current_policy.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
         restored_snapshot = {**version.snapshot, "id": version.policy_id}
         restored_policy = SourceHealthPolicy.model_validate(restored_snapshot)
         self._validate_source_health_policy(restored_policy)

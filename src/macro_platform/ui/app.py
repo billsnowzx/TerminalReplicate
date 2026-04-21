@@ -1175,8 +1175,14 @@ elif view == "Data Quality":
                     key=f"source_policy_rollback_version_{state_key}",
                 )
                 if st.button("Rollback to selected version", key=f"source_policy_rollback_button_{state_key}"):
-                    restored = service.rollback_source_health_policy_version(rollback_version.id)
-                    st.success(f"Rolled back policy: {restored.name}")
+                    try:
+                        restored = service.rollback_source_health_policy_version(
+                            rollback_version.id,
+                            allow_shared_mutation=allow_shared_policy_mutation,
+                        )
+                        st.success(f"Rolled back policy: {restored.name}")
+                    except PermissionError as exc:
+                        st.error(str(exc))
                 compare_left, compare_right = st.columns(2)
                 with compare_left:
                     left_version = st.selectbox(
