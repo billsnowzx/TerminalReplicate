@@ -1649,7 +1649,10 @@ elif view == "Notification Center":
         health = pd.DataFrame(
             [
                 item.model_dump(mode="json")
-                for item in service.list_notification_channel_health(window_hours=health_window_hours)
+                for item in service.list_notification_channel_health(
+                    window_hours=health_window_hours,
+                    owner_scope=notification_channel_scope_filter,
+                )
             ]
         )
         st.caption("Channel health")
@@ -1685,6 +1688,7 @@ elif view == "Notification Center":
                     event_type=None if event_type_filter == "all" else event_type_filter,
                     decision=None if route_decision_filter == "all" else route_decision_filter,
                     limit=200,
+                    owner_scope=notification_channel_scope_filter,
                 )
             ]
         )
@@ -1696,6 +1700,7 @@ elif view == "Notification Center":
                 channel_id=None if channel_filter == "all" else channel_filter,
                 event_type=None if event_type_filter == "all" else event_type_filter,
                 window_hours=summary_window,
+                owner_scope=notification_channel_scope_filter,
             )
         )
         st.caption("Routing summary")
@@ -1708,6 +1713,7 @@ elif view == "Notification Center":
                 event_type=None if event_type_filter == "all" else event_type_filter,
                 decision=None if route_decision_filter == "all" else route_decision_filter,
                 limit=5000,
+                owner_scope=notification_channel_scope_filter,
             )
             st.success(f"Exported {result['count']} rows to {result['path']}")
         if channels:

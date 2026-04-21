@@ -1,3 +1,4 @@
+import json
 import pytest
 import shutil
 from datetime import date, datetime, timedelta
@@ -1819,6 +1820,89 @@ def test_notification_routing_summary_and_export_endpoints(client):
     assert json_payload["format"] == "json"
     assert json_payload["count"] >= 1
     assert Path(json_payload["path"]).exists()
+
+
+def test_notification_owner_scope_filters_health_and_routing_views(client):
+    shared_channel = {
+        "id": "scope-shared-channel",
+        "name": "Scope Shared Channel",
+        "kind": "file",
+        "target": "scope-shared",
+        "event_types": ["manual", "report_job"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    private_channel = {
+        "id": "scope-private-channel",
+        "name": "Scope Private Channel",
+        "kind": "file",
+        "target": "scope-private",
+        "event_types": ["manual", "report_job"],
+        "owner_scope": "private",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=shared_channel).status_code == 200
+    assert client.post("/api/notifications/channels", json=private_channel).status_code == 200
+    assert client.post("/api/notifications/channels/scope-shared-channel/test").status_code == 200
+    assert client.post("/api/notifications/channels/scope-private-channel/test").status_code == 200
+
+    health_shared = client.get("/api/notifications/health", params={"owner_scope": "shared", "window_hours": 24})
+    assert health_shared.status_code == 200
+    health_shared_ids = {item["channel_id"] for item in health_shared.json()}
+    assert "scope-shared-channel" in health_shared_ids
+    assert "scope-private-channel" not in health_shared_ids
+
+    template_payload = {
+        "id": "scope-routing-template",
+        "name": "Scope Routing Template",
+        "owner_scope": "shared",
+        "sections": [{"kind": "global_monitor", "title": "Macro"}],
+    }
+    assert client.post("/api/reports/templates", json=template_payload).status_code == 200
+    job_payload = {
+        "id": "scope-routing-job",
+        "name": "Scope Routing Job",
+        "template_id": "scope-routing-template",
+        "cadence": "manual",
+        "run_hour_local": 8,
+        "export_formats": ["json"],
+        "notification_channel_ids": ["scope-shared-channel", "scope-private-channel"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/reports/jobs", json=job_payload).status_code == 200
+    assert client.post("/api/reports/jobs/scope-routing-job/run").status_code == 200
+
+    routing_shared = client.get(
+        "/api/notifications/routing",
+        params={"event_type": "report_job", "owner_scope": "shared", "limit": 200},
+    )
+    assert routing_shared.status_code == 200
+    routing_rows = routing_shared.json()
+    assert len(routing_rows) >= 1
+    assert all(item["channel_id"] == "scope-shared-channel" for item in routing_rows)
+
+    summary_shared = client.get(
+        "/api/notifications/routing/summary",
+        params={"event_type": "report_job", "owner_scope": "shared", "window_hours": 24},
+    )
+    assert summary_shared.status_code == 200
+    summary_rows = summary_shared.json()
+    assert len(summary_rows) == 1
+    assert summary_rows[0]["channel_id"] == "scope-shared-channel"
+
+    export_shared = client.post(
+        "/api/notifications/routing/export",
+        params={"format": "json", "event_type": "report_job", "owner_scope": "shared", "limit": 200},
+    )
+    assert export_shared.status_code == 200
+    export_payload = export_shared.json()
+    assert export_payload["count"] >= 1
+    export_file = Path(export_payload["path"])
+    assert export_file.exists()
+    exported_rows = json.loads(export_file.read_text(encoding="utf-8"))
+    assert len(exported_rows) >= 1
+    assert all(item["channel_id"] == "scope-shared-channel" for item in exported_rows)
 
 
 def test_notification_recovery_auto_resumes_paused_file_channel(client):

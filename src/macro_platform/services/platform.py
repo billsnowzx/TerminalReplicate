@@ -2210,11 +2210,15 @@ class PlatformService:
         self,
         channel_id: str | None = None,
         window_hours: int = 24,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[NotificationChannelHealth]:
         now = datetime.now()
         window_hours = max(1, int(window_hours))
         cutoff = now - timedelta(hours=window_hours)
-        channels = self.list_notification_channels(active_only=False)
+        channels = self.list_notification_channels(
+            active_only=False,
+            owner_scope=self._normalize_owner_scope_filter(owner_scope),
+        )
         if channel_id:
             channels = [channel for channel in channels if channel.id == channel_id]
         rows: list[NotificationChannelHealth] = []
@@ -2382,13 +2386,23 @@ class PlatformService:
         event_type: str | None = None,
         decision: str | None = None,
         limit: int = 200,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[NotificationRoutingAudit]:
-        return self.notification_routing_audit_repo.list_saved(
+        rows = self.notification_routing_audit_repo.list_saved(
             channel_id=channel_id,
             event_type=event_type,
             decision=decision,
             limit=limit,
         )
+        normalized_owner_scope = self._normalize_owner_scope_filter(owner_scope)
+        if normalized_owner_scope == "all":
+            return rows
+        allowed_channel_ids = {
+            item.id for item in self.list_notification_channels(active_only=False, owner_scope=normalized_owner_scope)
+        }
+        if channel_id is not None and channel_id not in allowed_channel_ids:
+            return []
+        return [item for item in rows if item.channel_id in allowed_channel_ids]
 
     def get_notification_routing_audit(self, audit_id: str) -> NotificationRoutingAudit:
         audit = self.notification_routing_audit_repo.get(audit_id)
@@ -2479,12 +2493,14 @@ class PlatformService:
         channel_id: str | None = None,
         event_type: str | None = None,
         window_hours: int = 24,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[dict[str, object]]:
         now = datetime.now()
         since = now - timedelta(hours=max(1, int(window_hours)))
         rows = self.list_notification_routing_audits(
             channel_id=channel_id,
             event_type=event_type,
+            owner_scope=owner_scope,
             limit=5000,
         )
         scoped = [item for item in rows if item.created_at >= since]
@@ -2520,11 +2536,13 @@ class PlatformService:
         event_type: str | None = None,
         decision: str | None = None,
         limit: int = 5000,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> dict[str, object]:
         rows = self.list_notification_routing_audits(
             channel_id=channel_id,
             event_type=event_type,
             decision=decision,
+            owner_scope=owner_scope,
             limit=limit,
         )
         export_dir = settings.notification_output_dir / "routing_exports"

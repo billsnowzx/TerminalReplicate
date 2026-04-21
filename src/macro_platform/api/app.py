@@ -775,10 +775,18 @@ def resume_notification_channel(channel_id: str, allow_shared_mutation: bool = T
 
 
 @app.get("/api/notifications/health")
-def list_notification_channel_health(channel_id: str | None = None, window_hours: int = Query(default=24, ge=1, le=168)):
+def list_notification_channel_health(
+    channel_id: str | None = None,
+    window_hours: int = Query(default=24, ge=1, le=168),
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     return [
         item.model_dump(mode="json")
-        for item in service.list_notification_channel_health(channel_id=channel_id, window_hours=window_hours)
+        for item in service.list_notification_channel_health(
+            channel_id=channel_id,
+            window_hours=window_hours,
+            owner_scope=owner_scope,
+        )
     ]
 
 
@@ -814,6 +822,7 @@ def list_notification_routing_audits(
     event_type: str | None = None,
     decision: str | None = None,
     limit: int = 200,
+    owner_scope: Literal["all", "shared", "private"] = "all",
 ):
     return [
         item.model_dump(mode="json")
@@ -822,6 +831,7 @@ def list_notification_routing_audits(
             event_type=event_type,
             decision=decision,
             limit=limit,
+            owner_scope=owner_scope,
         )
     ]
 
@@ -831,11 +841,13 @@ def get_notification_routing_summary(
     channel_id: str | None = None,
     event_type: str | None = None,
     window_hours: int = Query(default=24, ge=1, le=168),
+    owner_scope: Literal["all", "shared", "private"] = "all",
 ):
     return service.get_notification_routing_summary(
         channel_id=channel_id,
         event_type=event_type,
         window_hours=window_hours,
+        owner_scope=owner_scope,
     )
 
 
@@ -846,6 +858,7 @@ def export_notification_routing_audits(
     event_type: str | None = None,
     decision: str | None = None,
     limit: int = Query(default=5000, ge=1, le=20000),
+    owner_scope: Literal["all", "shared", "private"] = "all",
 ):
     try:
         return service.export_notification_routing_audits(
@@ -854,6 +867,7 @@ def export_notification_routing_audits(
             event_type=event_type,
             decision=decision,
             limit=limit,
+            owner_scope=owner_scope,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
