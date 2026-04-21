@@ -393,6 +393,7 @@ def list_source_health_policy_version_presets(
     order: str = "asc",
     query: str | None = None,
     only_default: bool = False,
+    owner_scope: Literal["all", "shared", "private"] = "all",
 ):
     try:
         return [
@@ -405,6 +406,7 @@ def list_source_health_policy_version_presets(
                 order=order,
                 query=query,
                 only_default=only_default,
+                owner_scope=owner_scope,
             )
         ]
     except KeyError as exc:
@@ -441,9 +443,17 @@ def list_source_health_policy_versions_by_preset(preset_id: str):
 
 
 @app.post("/api/status/sources/policies/version-presets")
-def save_source_health_policy_version_preset(preset: SourceHealthPolicyVersionPreset):
+def save_source_health_policy_version_preset(
+    preset: SourceHealthPolicyVersionPreset,
+    allow_shared_mutation: bool = True,
+):
     try:
-        return service.save_source_health_policy_version_preset(preset).model_dump(mode="json")
+        return service.save_source_health_policy_version_preset(
+            preset,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
     except ValueError as exc:
@@ -451,18 +461,33 @@ def save_source_health_policy_version_preset(preset: SourceHealthPolicyVersionPr
 
 
 @app.delete("/api/status/sources/policies/version-presets/{preset_id}")
-def delete_source_health_policy_version_preset(preset_id: str):
+def delete_source_health_policy_version_preset(preset_id: str, allow_shared_mutation: bool = True):
     try:
-        service.delete_source_health_policy_version_preset(preset_id)
+        service.delete_source_health_policy_version_preset(
+            preset_id,
+            allow_shared_mutation=allow_shared_mutation,
+        )
         return {"status": "deleted", "id": preset_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
 
 
 @app.post("/api/status/sources/policies/version-presets/{preset_id}/clone")
-def clone_source_health_policy_version_preset(preset_id: str, name: str | None = None):
+def clone_source_health_policy_version_preset(
+    preset_id: str,
+    name: str | None = None,
+    allow_shared_mutation: bool = True,
+):
     try:
-        return service.clone_source_health_policy_version_preset(preset_id, name=name).model_dump(mode="json")
+        return service.clone_source_health_policy_version_preset(
+            preset_id,
+            name=name,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
     except ValueError as exc:
@@ -470,9 +495,14 @@ def clone_source_health_policy_version_preset(preset_id: str, name: str | None =
 
 
 @app.post("/api/status/sources/policies/version-presets/{preset_id}/set-default")
-def set_default_source_health_policy_version_preset(preset_id: str):
+def set_default_source_health_policy_version_preset(preset_id: str, allow_shared_mutation: bool = True):
     try:
-        return service.set_default_source_health_policy_version_preset(preset_id).model_dump(mode="json")
+        return service.set_default_source_health_policy_version_preset(
+            preset_id,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
     except ValueError as exc:
@@ -480,9 +510,19 @@ def set_default_source_health_policy_version_preset(preset_id: str):
 
 
 @app.post("/api/status/sources/policies/version-presets/{preset_id}/rename")
-def rename_source_health_policy_version_preset(preset_id: str, name: str):
+def rename_source_health_policy_version_preset(
+    preset_id: str,
+    name: str,
+    allow_shared_mutation: bool = True,
+):
     try:
-        return service.rename_source_health_policy_version_preset(preset_id=preset_id, name=name).model_dump(mode="json")
+        return service.rename_source_health_policy_version_preset(
+            preset_id=preset_id,
+            name=name,
+            allow_shared_mutation=allow_shared_mutation,
+        ).model_dump(mode="json")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy version preset not found.") from exc
     except ValueError as exc:

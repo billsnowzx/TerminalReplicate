@@ -2847,6 +2847,76 @@ def test_source_health_policy_version_preset_auto_assigns_default_when_missing(c
     assert defaults[0]["id"] == "source-policy-version-preset-auto-default-1"
 
 
+def test_source_health_policy_version_preset_owner_scope_filter_and_delete_guard(client):
+    channel_payload = {
+        "id": "source-policy-preset-scope-drop",
+        "name": "Source Policy Preset Scope Drop",
+        "kind": "file",
+        "target": "source-policy-preset-scope",
+        "owner_scope": "shared",
+        "active": True,
+    }
+    policy_payload = {
+        "id": "source-policy-preset-scope-1",
+        "name": "Source Policy Preset Scope",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "notification_channel_ids": ["source-policy-preset-scope-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    assert client.post("/api/status/sources/policies", json=policy_payload).status_code == 200
+    shared_payload = {
+        "id": "source-policy-version-preset-scope-shared",
+        "policy_id": "source-policy-preset-scope-1",
+        "name": "Scope Shared",
+        "action_filter": "update",
+        "limit": 25,
+        "owner_scope": "shared",
+    }
+    private_payload = {
+        "id": "source-policy-version-preset-scope-private",
+        "policy_id": "source-policy-preset-scope-1",
+        "name": "Scope Private",
+        "action_filter": "rollback",
+        "limit": 25,
+        "owner_scope": "private",
+    }
+    assert client.post("/api/status/sources/policies/version-presets", json=shared_payload).status_code == 200
+    assert client.post("/api/status/sources/policies/version-presets", json=private_payload).status_code == 200
+
+    shared_only = client.get(
+        "/api/status/sources/policies/source-policy-preset-scope-1/version-presets",
+        params={"owner_scope": "shared"},
+    )
+    private_only = client.get(
+        "/api/status/sources/policies/source-policy-preset-scope-1/version-presets",
+        params={"owner_scope": "private"},
+    )
+    assert shared_only.status_code == 200
+    assert private_only.status_code == 200
+    assert all(item["owner_scope"] == "shared" for item in shared_only.json())
+    assert all(item["owner_scope"] == "private" for item in private_only.json())
+
+    strict_blocked_update = client.post(
+        "/api/status/sources/policies/version-presets",
+        params={"allow_shared_mutation": False},
+        json={**shared_payload, "name": "Scope Shared Updated"},
+    )
+    assert strict_blocked_update.status_code == 403
+    blocked_delete = client.delete(
+        "/api/status/sources/policies/version-presets/source-policy-version-preset-scope-shared",
+        params={"allow_shared_mutation": False},
+    )
+    assert blocked_delete.status_code == 403
+    allowed_delete = client.delete(
+        "/api/status/sources/policies/version-presets/source-policy-version-preset-scope-shared",
+        params={"allow_shared_mutation": True},
+    )
+    assert allowed_delete.status_code == 200
+
+
 def test_source_health_policy_version_preset_timestamps_are_recorded_and_created_at_is_stable(client):
     channel_payload = {
         "id": "source-policy-preset-timestamps-drop",

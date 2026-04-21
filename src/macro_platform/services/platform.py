@@ -1198,6 +1198,7 @@ class PlatformService:
         order: str = "asc",
         query: str | None = None,
         only_default: bool = False,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[SourceHealthPolicyVersionPreset]:
         self.get_source_health_policy(policy_id)
         if limit < 1:
@@ -1220,6 +1221,8 @@ class PlatformService:
                 "sort_by must be one of: name, usage_count, last_used_at, updated_at, created_at, is_default."
             )
         rows = self.source_health_policy_version_preset_repo.list_saved(policy_id=policy_id, limit=1000)
+        if owner_scope != "all":
+            rows = [item for item in rows if item.owner_scope == owner_scope]
         if only_default:
             rows = [item for item in rows if item.is_default]
         if query is not None:
@@ -1281,12 +1284,20 @@ class PlatformService:
     def save_source_health_policy_version_preset(
         self,
         preset: SourceHealthPolicyVersionPreset,
+        allow_shared_mutation: bool = True,
     ) -> SourceHealthPolicyVersionPreset:
         self.get_source_health_policy(preset.policy_id)
         existing = self.source_health_policy_version_preset_repo.get(preset.id)
         if existing is not None:
             if existing.policy_id != preset.policy_id:
                 raise ValueError("Cannot move preset to a different policy.")
+            self._enforce_shared_mutation_policy(
+                entity_label="Source health policy version preset",
+                entity_id=preset.id,
+                existing_scope=existing.owner_scope,
+                incoming_scope=preset.owner_scope,
+                allow_shared_mutation=allow_shared_mutation,
+            )
             if preset.created_at is None:
                 preset.created_at = existing.created_at
             if preset.last_used_at is None:
@@ -1326,21 +1337,28 @@ class PlatformService:
         )
         return self.get_source_health_policy_version_preset(saved.id)
 
-    def delete_source_health_policy_version_preset(self, preset_id: str) -> None:
+    def delete_source_health_policy_version_preset(self, preset_id: str, allow_shared_mutation: bool = True) -> None:
         deleted = self.get_source_health_policy_version_preset(preset_id)
+        self._enforce_shared_mutation_policy(
+            entity_label="Source health policy version preset",
+            entity_id=preset_id,
+            existing_scope=deleted.owner_scope,
+            allow_shared_mutation=allow_shared_mutation,
+        )
         self.source_health_policy_version_preset_repo.delete(preset_id)
         if deleted.is_default:
             remaining = self.list_source_health_policy_version_presets(deleted.policy_id, limit=500)
             if remaining:
                 promoted = remaining[0]
                 promoted.is_default = True
-                self.save_source_health_policy_version_preset(promoted)
+                self.save_source_health_policy_version_preset(promoted, allow_shared_mutation=True)
         self._ensure_source_health_policy_version_preset_default(policy_id=deleted.policy_id)
 
     def clone_source_health_policy_version_preset(
         self,
         preset_id: str,
         name: str | None = None,
+        allow_shared_mutation: bool = True,
     ) -> SourceHealthPolicyVersionPreset:
         preset = self.get_source_health_policy_version_preset(preset_id)
         clone = preset.model_copy(deep=True)
@@ -1359,12 +1377,16 @@ class PlatformService:
         clone.usage_count = 0
         if not clone.name:
             raise ValueError("name must be non-empty.")
-        return self.save_source_health_policy_version_preset(clone)
+        return self.save_source_health_policy_version_preset(clone, allow_shared_mutation=allow_shared_mutation)
 
-    def set_default_source_health_policy_version_preset(self, preset_id: str) -> SourceHealthPolicyVersionPreset:
+    def set_default_source_health_policy_version_preset(
+        self,
+        preset_id: str,
+        allow_shared_mutation: bool = True,
+    ) -> SourceHealthPolicyVersionPreset:
         preset = self.get_source_health_policy_version_preset(preset_id)
         preset.is_default = True
-        return self.save_source_health_policy_version_preset(preset)
+        return self.save_source_health_policy_version_preset(preset, allow_shared_mutation=allow_shared_mutation)
 
     def touch_source_health_policy_version_preset_usage(
         self,
@@ -1549,11 +1571,12 @@ class PlatformService:
         self,
         preset_id: str,
         name: str,
+        allow_shared_mutation: bool = True,
     ) -> SourceHealthPolicyVersionPreset:
         preset = self.get_source_health_policy_version_preset(preset_id)
         updated = preset.model_copy(deep=True)
         updated.name = name
-        return self.save_source_health_policy_version_preset(updated)
+        return self.save_source_health_policy_version_preset(updated, allow_shared_mutation=allow_shared_mutation)
 
     def _validate_source_health_policy_version_preset_name_uniqueness(
         self,
