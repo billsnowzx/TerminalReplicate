@@ -804,6 +804,7 @@ def list_notification_deliveries(
     event_type: str | None = None,
     status: str | None = None,
     limit: int = 100,
+    owner_scope: Literal["all", "shared", "private"] = "all",
 ):
     return [
         item.model_dump(mode="json")
@@ -812,6 +813,7 @@ def list_notification_deliveries(
             event_type=event_type,
             status=status,
             limit=limit,
+            owner_scope=owner_scope,
         )
     ]
 
@@ -970,10 +972,20 @@ def retry_notification_delivery(delivery_id: str):
 
 
 @app.get("/api/notifications/digests")
-def list_notification_digests(channel_id: str | None = None, status: str | None = None, limit: int = 100):
+def list_notification_digests(
+    channel_id: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     return [
         item.model_dump(mode="json")
-        for item in service.list_notification_digests(channel_id=channel_id, status=status, limit=limit)
+        for item in service.list_notification_digests(
+            channel_id=channel_id,
+            status=status,
+            limit=limit,
+            owner_scope=owner_scope,
+        )
     ]
 
 

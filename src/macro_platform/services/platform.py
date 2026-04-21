@@ -2198,13 +2198,23 @@ class PlatformService:
         event_type: str | None = None,
         status: str | None = None,
         limit: int = 100,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[NotificationDelivery]:
-        return self.notification_delivery_repo.list_saved(
+        rows = self.notification_delivery_repo.list_saved(
             channel_id=channel_id,
             event_type=event_type,
             status=status,
             limit=limit,
         )
+        normalized_owner_scope = self._normalize_owner_scope_filter(owner_scope)
+        if normalized_owner_scope == "all":
+            return rows
+        allowed_channel_ids = {
+            item.id for item in self.list_notification_channels(active_only=False, owner_scope=normalized_owner_scope)
+        }
+        if channel_id is not None and channel_id not in allowed_channel_ids:
+            return []
+        return [item for item in rows if item.channel_id in allowed_channel_ids]
 
     def list_notification_channel_health(
         self,
@@ -2371,8 +2381,18 @@ class PlatformService:
         channel_id: str | None = None,
         status: str | None = None,
         limit: int = 100,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[NotificationDigest]:
-        return self.notification_digest_repo.list_saved(channel_id=channel_id, status=status, limit=limit)
+        rows = self.notification_digest_repo.list_saved(channel_id=channel_id, status=status, limit=limit)
+        normalized_owner_scope = self._normalize_owner_scope_filter(owner_scope)
+        if normalized_owner_scope == "all":
+            return rows
+        allowed_channel_ids = {
+            item.id for item in self.list_notification_channels(active_only=False, owner_scope=normalized_owner_scope)
+        }
+        if channel_id is not None and channel_id not in allowed_channel_ids:
+            return []
+        return [item for item in rows if item.channel_id in allowed_channel_ids]
 
     def get_notification_digest(self, digest_id: str) -> NotificationDigest:
         digest = self.notification_digest_repo.get(digest_id)

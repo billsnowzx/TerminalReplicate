@@ -1672,6 +1672,7 @@ elif view == "Notification Center":
                     event_type=None if event_type_filter == "all" else event_type_filter,
                     status=None if status_filter == "all" else status_filter,
                     limit=100,
+                    owner_scope=notification_channel_scope_filter,
                 )
             ]
         )
@@ -1791,6 +1792,7 @@ elif view == "Notification Center":
             event_type=None if event_type_filter == "all" else event_type_filter,
             status=None if status_filter == "all" else status_filter,
             limit=100,
+            owner_scope=notification_channel_scope_filter,
         )
         if delivery_rows:
             retry_delivery_id = st.selectbox("Retry delivery", [item.id for item in delivery_rows])
@@ -1806,6 +1808,7 @@ elif view == "Notification Center":
                 for item in service.list_notification_digests(
                     channel_id=None if channel_filter == "all" else channel_filter,
                     limit=50,
+                    owner_scope=notification_channel_scope_filter,
                 )
             ]
         )
