@@ -3139,6 +3139,38 @@ def test_source_health_policy_version_preset_owner_scope_filter_and_delete_guard
         params={"allow_shared_mutation": False},
     )
     assert blocked_delete.status_code == 403
+    blocked_import_upsert = client.post(
+        "/api/status/sources/policies/source-policy-preset-scope-1/version-presets/import",
+        params={"allow_shared_mutation": False},
+        json={
+            "mode": "upsert",
+            "presets": [
+                {
+                    "name": "Scope Shared",
+                    "action_filter": "restore",
+                    "limit": 50,
+                    "owner_scope": "shared",
+                }
+            ],
+        },
+    )
+    assert blocked_import_upsert.status_code == 403
+    blocked_import_replace = client.post(
+        "/api/status/sources/policies/source-policy-preset-scope-1/version-presets/import",
+        params={"allow_shared_mutation": False},
+        json={
+            "mode": "replace",
+            "presets": [
+                {
+                    "name": "Scope Replacement",
+                    "action_filter": "create",
+                    "limit": 10,
+                    "owner_scope": "private",
+                }
+            ],
+        },
+    )
+    assert blocked_import_replace.status_code == 403
     allowed_delete = client.delete(
         "/api/status/sources/policies/version-presets/source-policy-version-preset-scope-shared",
         params={"allow_shared_mutation": True},
@@ -3956,11 +3988,11 @@ def test_source_health_policy_version_preset_import_rolls_back_on_runtime_failur
     original_save = api_module.service.save_source_health_policy_version_preset
     call_count = {"value": 0}
 
-    def flaky_save(preset):
+    def flaky_save(preset, allow_shared_mutation: bool = True):
         call_count["value"] += 1
         if call_count["value"] == 2:
             raise ValueError("simulated import failure")
-        return original_save(preset)
+        return original_save(preset, allow_shared_mutation=allow_shared_mutation)
 
     api_module.service.save_source_health_policy_version_preset = flaky_save
     try:

@@ -544,12 +544,22 @@ def export_source_health_policy_version_presets(policy_id: str):
 
 
 @app.post("/api/status/sources/policies/{policy_id}/version-presets/import")
-def import_source_health_policy_version_presets(policy_id: str, request: SourceHealthPolicyVersionPresetImportRequest):
+def import_source_health_policy_version_presets(
+    policy_id: str,
+    request: SourceHealthPolicyVersionPresetImportRequest,
+    allow_shared_mutation: bool = True,
+):
     try:
         return [
             item.model_dump(mode="json")
-            for item in service.import_source_health_policy_version_presets(policy_id=policy_id, request=request)
+            for item in service.import_source_health_policy_version_presets(
+                policy_id=policy_id,
+                request=request,
+                allow_shared_mutation=allow_shared_mutation,
+            )
         ]
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source health policy not found.") from exc
     except ValueError as exc:

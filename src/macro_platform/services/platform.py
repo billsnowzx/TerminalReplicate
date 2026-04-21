@@ -1462,6 +1462,7 @@ class PlatformService:
         self,
         policy_id: str,
         request: SourceHealthPolicyVersionPresetImportRequest,
+        allow_shared_mutation: bool = True,
     ) -> list[SourceHealthPolicyVersionPreset]:
         self.get_source_health_policy(policy_id)
         presets = request.presets
@@ -1479,6 +1480,12 @@ class PlatformService:
         try:
             if request.mode == "replace":
                 for item in existing:
+                    self._enforce_shared_mutation_policy(
+                        entity_label="Source health policy version preset",
+                        entity_id=item.id,
+                        existing_scope=item.owner_scope,
+                        allow_shared_mutation=allow_shared_mutation,
+                    )
                     self.source_health_policy_version_preset_repo.delete(item.id)
             imported: list[SourceHealthPolicyVersionPreset] = []
             force_first_default = request.mode == "replace" and not any(item.is_default for item in presets)
@@ -1506,7 +1513,12 @@ class PlatformService:
                         item=item,
                         is_default_override=True if force_first_default and index == 0 else None,
                     )
-                imported.append(self.save_source_health_policy_version_preset(imported_item))
+                imported.append(
+                    self.save_source_health_policy_version_preset(
+                        imported_item,
+                        allow_shared_mutation=allow_shared_mutation,
+                    )
+                )
             preferred_default_id = existing_default_id
             if preferred_default_id is None and imported:
                 preferred_default_id = imported[0].id

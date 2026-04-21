@@ -943,6 +943,17 @@ elif view == "Data Quality":
                 key=f"source_policy_version_limit_{state_key}",
             )
             with load_right:
+                version_preset_owner_scope = st.selectbox(
+                    "Version preset owner scope",
+                    ["shared", "private"],
+                    index=0 if selected_preset is None or selected_preset.owner_scope == "shared" else 1,
+                    key=f"source_policy_version_preset_owner_scope_{state_key}",
+                )
+                allow_version_preset_shared_mutation = st.checkbox(
+                    "Allow shared version preset mutation",
+                    value=True,
+                    key=f"source_policy_allow_shared_version_preset_mutation_{state_key}",
+                )
                 preset_is_default = st.checkbox(
                     "Mark saved preset as default",
                     value=False if selected_preset is None else selected_preset.is_default,
@@ -962,13 +973,16 @@ elif view == "Data Quality":
                         query=version_query or None,
                         limit=int(version_limit),
                         is_default=bool(preset_is_default),
-                        owner_scope="shared",
+                        owner_scope=version_preset_owner_scope,
                     )
                     try:
-                        service.save_source_health_policy_version_preset(preset)
+                        service.save_source_health_policy_version_preset(
+                            preset,
+                            allow_shared_mutation=allow_version_preset_shared_mutation,
+                        )
                         st.success(f"Saved version preset: {preset.name}")
                         st.rerun()
-                    except ValueError as exc:
+                    except (PermissionError, ValueError) as exc:
                         st.error(str(exc))
                 if selected_preset is not None:
                     st.caption(f"Selected preset: {selected_preset.name}{' [default]' if selected_preset.is_default else ''}")
@@ -986,10 +1000,14 @@ elif view == "Data Quality":
                     )
                     if st.button("Rename selected preset", key=f"source_policy_rename_version_preset_{state_key}"):
                         try:
-                            updated = service.rename_source_health_policy_version_preset(selected_preset.id, rename_name)
+                            updated = service.rename_source_health_policy_version_preset(
+                                selected_preset.id,
+                                rename_name,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
                             st.success(f"Renamed version preset: {updated.name}")
                             st.rerun()
-                        except ValueError as exc:
+                        except (PermissionError, ValueError) as exc:
                             st.error(str(exc))
                     if st.button("Update selected preset", key=f"source_policy_update_version_preset_{state_key}"):
                         updated_preset = SourceHealthPolicyVersionPreset(
@@ -1000,18 +1018,27 @@ elif view == "Data Quality":
                             query=version_query or None,
                             limit=int(version_limit),
                             is_default=bool(preset_is_default),
-                            owner_scope=selected_preset.owner_scope,
+                            owner_scope=version_preset_owner_scope,
                         )
                         try:
-                            service.save_source_health_policy_version_preset(updated_preset)
+                            service.save_source_health_policy_version_preset(
+                                updated_preset,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
                             st.success(f"Updated version preset: {selected_preset.name}")
                             st.rerun()
-                        except ValueError as exc:
+                        except (PermissionError, ValueError) as exc:
                             st.error(str(exc))
                     if st.button("Set selected as default", key=f"source_policy_set_default_version_preset_{state_key}"):
-                        updated = service.set_default_source_health_policy_version_preset(selected_preset.id)
-                        st.success(f"Default preset set: {updated.name}")
-                        st.rerun()
+                        try:
+                            updated = service.set_default_source_health_policy_version_preset(
+                                selected_preset.id,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
+                            st.success(f"Default preset set: {updated.name}")
+                            st.rerun()
+                        except (PermissionError, ValueError) as exc:
+                            st.error(str(exc))
                     clone_name = st.text_input(
                         "Clone as",
                         value=f"{selected_preset.name} copy",
@@ -1019,15 +1046,25 @@ elif view == "Data Quality":
                     )
                     if st.button("Clone selected preset", key=f"source_policy_clone_version_preset_{state_key}"):
                         try:
-                            clone = service.clone_source_health_policy_version_preset(selected_preset.id, name=clone_name)
+                            clone = service.clone_source_health_policy_version_preset(
+                                selected_preset.id,
+                                name=clone_name,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
                             st.success(f"Cloned version preset: {clone.name}")
                             st.rerun()
-                        except ValueError as exc:
+                        except (PermissionError, ValueError) as exc:
                             st.error(str(exc))
                     if st.button("Delete selected preset", key=f"source_policy_delete_version_preset_{state_key}"):
-                        service.delete_source_health_policy_version_preset(selected_preset.id)
-                        st.success(f"Deleted version preset: {selected_preset.name}")
-                        st.rerun()
+                        try:
+                            service.delete_source_health_policy_version_preset(
+                                selected_preset.id,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
+                            st.success(f"Deleted version preset: {selected_preset.name}")
+                            st.rerun()
+                        except PermissionError as exc:
+                            st.error(str(exc))
                 st.caption("Preset bundle import/export")
                 export_text_key = f"source_policy_version_preset_bundle_{state_key}"
                 if export_text_key not in st.session_state:
@@ -1088,6 +1125,7 @@ elif view == "Data Quality":
                         imported = service.import_source_health_policy_version_presets(
                             policy_id=editing_policy.id,
                             request=import_request,
+                            allow_shared_mutation=allow_version_preset_shared_mutation,
                         )
                         st.success(f"Imported {len(imported)} preset(s) in {import_mode} mode.")
                         st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
