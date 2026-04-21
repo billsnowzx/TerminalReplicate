@@ -1881,6 +1881,35 @@ def test_notification_owner_scope_filters_health_and_routing_views(client):
     delivery_rows = deliveries_shared.json()
     assert len(delivery_rows) >= 1
     assert all(item["channel_id"] == "scope-shared-channel" for item in delivery_rows)
+    deliveries_private = client.get(
+        "/api/notifications/deliveries",
+        params={"event_type": "report_job", "owner_scope": "private", "limit": 200},
+    )
+    assert deliveries_private.status_code == 200
+    private_delivery_rows = deliveries_private.json()
+    assert len(private_delivery_rows) >= 1
+    private_delivery_id = private_delivery_rows[0]["id"]
+    assert (
+        client.get(
+            f"/api/notifications/deliveries/{private_delivery_id}",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/api/notifications/deliveries/{private_delivery_id}/retry",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            "/api/notifications/channels/scope-private-channel/test",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
 
     routing_shared = client.get(
         "/api/notifications/routing",
@@ -1890,6 +1919,19 @@ def test_notification_owner_scope_filters_health_and_routing_views(client):
     routing_rows = routing_shared.json()
     assert len(routing_rows) >= 1
     assert all(item["channel_id"] == "scope-shared-channel" for item in routing_rows)
+    routing_private = client.get(
+        "/api/notifications/routing",
+        params={"event_type": "report_job", "owner_scope": "private", "limit": 200},
+    )
+    assert routing_private.status_code == 200
+    private_audit_id = routing_private.json()[0]["id"]
+    assert (
+        client.get(
+            f"/api/notifications/routing/{private_audit_id}",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
+    )
 
     summary_shared = client.get(
         "/api/notifications/routing/summary",
@@ -1920,12 +1962,25 @@ def test_notification_owner_scope_filters_health_and_routing_views(client):
         ).status_code
         == 200
     )
+    private_digest = client.post(
+        "/api/notifications/channels/scope-private-channel/digest",
+        params={"status": "new", "limit": 25, "publish_included": False},
+    )
+    assert private_digest.status_code == 200
+    private_digest_id = private_digest.json()["id"]
     assert (
         client.post(
             "/api/notifications/channels/scope-private-channel/digest",
-            params={"status": "new", "limit": 25, "publish_included": False},
+            params={"status": "new", "limit": 25, "publish_included": False, "owner_scope": "shared"},
         ).status_code
-        == 200
+        == 404
+    )
+    assert (
+        client.get(
+            f"/api/notifications/digests/{private_digest_id}",
+            params={"owner_scope": "shared"},
+        ).status_code
+        == 404
     )
     digests_shared = client.get("/api/notifications/digests", params={"owner_scope": "shared", "limit": 200})
     assert digests_shared.status_code == 200

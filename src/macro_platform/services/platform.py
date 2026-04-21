@@ -155,6 +155,18 @@ class PlatformService:
             return None
         return owner_scope
 
+    def _ensure_channel_owner_scope(
+        self,
+        channel_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> None:
+        normalized_owner_scope = self._normalize_owner_scope_filter(owner_scope)
+        if normalized_owner_scope is None:
+            return
+        channel = self.get_notification_channel(channel_id)
+        if channel.owner_scope != normalized_owner_scope:
+            raise KeyError(channel_id)
+
     def _enforce_shared_mutation_policy(
         self,
         *,
@@ -2394,10 +2406,15 @@ class PlatformService:
             return []
         return [item for item in rows if item.channel_id in allowed_channel_ids]
 
-    def get_notification_digest(self, digest_id: str) -> NotificationDigest:
+    def get_notification_digest(
+        self,
+        digest_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> NotificationDigest:
         digest = self.notification_digest_repo.get(digest_id)
         if digest is None:
             raise KeyError(digest_id)
+        self._ensure_channel_owner_scope(digest.channel_id, owner_scope=owner_scope)
         return digest
 
     def list_notification_routing_audits(
@@ -2424,10 +2441,15 @@ class PlatformService:
             return []
         return [item for item in rows if item.channel_id in allowed_channel_ids]
 
-    def get_notification_routing_audit(self, audit_id: str) -> NotificationRoutingAudit:
+    def get_notification_routing_audit(
+        self,
+        audit_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> NotificationRoutingAudit:
         audit = self.notification_routing_audit_repo.get(audit_id)
         if audit is None:
             raise KeyError(audit_id)
+        self._ensure_channel_owner_scope(audit.channel_id, owner_scope=owner_scope)
         return audit
 
     def list_ops_incidents(
@@ -2605,10 +2627,15 @@ class PlatformService:
             "path": str(output_path),
         }
 
-    def get_notification_delivery(self, delivery_id: str) -> NotificationDelivery:
+    def get_notification_delivery(
+        self,
+        delivery_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> NotificationDelivery:
         delivery = self.notification_delivery_repo.get(delivery_id)
         if delivery is None:
             raise KeyError(delivery_id)
+        self._ensure_channel_owner_scope(delivery.channel_id, owner_scope=owner_scope)
         return delivery
 
     def dispatch_notification(
@@ -2674,7 +2701,13 @@ class PlatformService:
             apply_followups=True,
         )
 
-    def send_test_notification(self, channel_id: str, subject: str | None = None) -> NotificationDelivery:
+    def send_test_notification(
+        self,
+        channel_id: str,
+        subject: str | None = None,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> NotificationDelivery:
+        self._ensure_channel_owner_scope(channel_id, owner_scope=owner_scope)
         channel = self.get_notification_channel(channel_id)
         return self.dispatch_notification(
             channel_id=channel.id,
@@ -2687,8 +2720,12 @@ class PlatformService:
             },
         )
 
-    def retry_notification_delivery(self, delivery_id: str) -> NotificationDelivery:
-        existing = self.get_notification_delivery(delivery_id)
+    def retry_notification_delivery(
+        self,
+        delivery_id: str,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> NotificationDelivery:
+        existing = self.get_notification_delivery(delivery_id, owner_scope=owner_scope)
         channel = self.get_notification_channel(existing.channel_id)
         if existing.attempt_count >= channel.max_retry_attempts:
             raise ValueError(f"Maximum retry attempts reached for channel '{channel.name}'.")
@@ -2716,7 +2753,9 @@ class PlatformService:
         status: str = "new",
         limit: int = 25,
         publish_included: bool = False,
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> NotificationDigest:
+        self._ensure_channel_owner_scope(channel_id, owner_scope=owner_scope)
         channel = self.get_notification_channel(channel_id)
         if not channel.active:
             raise ValueError(f"Notification channel '{channel.name}' is inactive.")
@@ -2788,10 +2827,14 @@ class PlatformService:
                 )
         return persisted
 
-    def run_due_notification_digests(self, now: datetime | None = None) -> list[NotificationDigest]:
+    def run_due_notification_digests(
+        self,
+        now: datetime | None = None,
+        owner_scope: Literal["all", "shared", "private"] = "all",
+    ) -> list[NotificationDigest]:
         now = now or datetime.now()
         completed: list[NotificationDigest] = []
-        for channel in self.list_notification_channels(active_only=True):
+        for channel in self.list_notification_channels(active_only=True, owner_scope=owner_scope):
             if _channel_is_paused(channel, now=now):
                 continue
             if channel.delivery_mode != "digest" or "alert_event" not in channel.event_types:
@@ -2811,6 +2854,7 @@ class PlatformService:
                     status=channel.digest_status_filter,
                     limit=channel.digest_limit,
                     publish_included=channel.digest_publish_included,
+                    owner_scope=owner_scope,
                 )
                 channel.last_digest_at = digest.triggered_at
                 channel.next_digest_at = _compute_next_run_at(

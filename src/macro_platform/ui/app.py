@@ -1726,8 +1726,15 @@ elif view == "Notification Center":
             )
             test_subject = st.text_input("Test subject", value="")
             if st.button("Send test notification"):
-                delivery = service.send_test_notification(test_channel_id, subject=test_subject or None)
-                st.success(f"Sent test notification via {delivery.channel_name}")
+                try:
+                    delivery = service.send_test_notification(
+                        test_channel_id,
+                        subject=test_subject or None,
+                        owner_scope=notification_channel_scope_filter,
+                    )
+                    st.success(f"Sent test notification via {delivery.channel_name}")
+                except KeyError:
+                    st.error("Notification channel is outside the selected scope.")
             pause_channel_id = st.selectbox(
                 "Pause or resume channel",
                 [item.id for item in channels],
@@ -1780,12 +1787,13 @@ elif view == "Notification Center":
                             status=digest_status,
                             limit=digest_limit,
                             publish_included=publish_digest_events,
+                            owner_scope=notification_channel_scope_filter,
                         )
                         st.success(f"Sent digest {digest.id} with {digest.event_count} event(s)")
-                    except ValueError as exc:
+                    except (KeyError, ValueError) as exc:
                         st.error(str(exc))
                 if st.button("Run due digests"):
-                    completed = service.run_due_notification_digests()
+                    completed = service.run_due_notification_digests(owner_scope=notification_channel_scope_filter)
                     st.success(f"Ran {len(completed)} due digest channel(s)")
         delivery_rows = service.list_notification_deliveries(
             channel_id=None if channel_filter == "all" else channel_filter,
@@ -1798,9 +1806,12 @@ elif view == "Notification Center":
             retry_delivery_id = st.selectbox("Retry delivery", [item.id for item in delivery_rows])
             if st.button("Retry selected delivery"):
                 try:
-                    delivery = service.retry_notification_delivery(retry_delivery_id)
+                    delivery = service.retry_notification_delivery(
+                        retry_delivery_id,
+                        owner_scope=notification_channel_scope_filter,
+                    )
                     st.success(f"Retried delivery {delivery.id} via {delivery.channel_name}")
-                except ValueError as exc:
+                except (KeyError, ValueError) as exc:
                     st.error(str(exc))
         digests = pd.DataFrame(
             [

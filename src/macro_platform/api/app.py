@@ -791,9 +791,13 @@ def list_notification_channel_health(
 
 
 @app.post("/api/notifications/channels/{channel_id}/test")
-def send_test_notification(channel_id: str, subject: str | None = None):
+def send_test_notification(
+    channel_id: str,
+    subject: str | None = None,
+    owner_scope: Literal["all", "shared", "private"] = "all",
+):
     try:
-        return service.send_test_notification(channel_id, subject=subject).model_dump(mode="json")
+        return service.send_test_notification(channel_id, subject=subject, owner_scope=owner_scope).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
 
@@ -946,25 +950,25 @@ def update_ops_incident(
 
 
 @app.get("/api/notifications/routing/{audit_id}")
-def get_notification_routing_audit(audit_id: str):
+def get_notification_routing_audit(audit_id: str, owner_scope: Literal["all", "shared", "private"] = "all"):
     try:
-        return service.get_notification_routing_audit(audit_id).model_dump(mode="json")
+        return service.get_notification_routing_audit(audit_id, owner_scope=owner_scope).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification routing audit not found.") from exc
 
 
 @app.get("/api/notifications/deliveries/{delivery_id}")
-def get_notification_delivery(delivery_id: str):
+def get_notification_delivery(delivery_id: str, owner_scope: Literal["all", "shared", "private"] = "all"):
     try:
-        return service.get_notification_delivery(delivery_id).model_dump(mode="json")
+        return service.get_notification_delivery(delivery_id, owner_scope=owner_scope).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification delivery not found.") from exc
 
 
 @app.post("/api/notifications/deliveries/{delivery_id}/retry")
-def retry_notification_delivery(delivery_id: str):
+def retry_notification_delivery(delivery_id: str, owner_scope: Literal["all", "shared", "private"] = "all"):
     try:
-        return service.retry_notification_delivery(delivery_id).model_dump(mode="json")
+        return service.retry_notification_delivery(delivery_id, owner_scope=owner_scope).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification delivery not found.") from exc
     except ValueError as exc:
@@ -990,9 +994,9 @@ def list_notification_digests(
 
 
 @app.get("/api/notifications/digests/{digest_id}")
-def get_notification_digest(digest_id: str):
+def get_notification_digest(digest_id: str, owner_scope: Literal["all", "shared", "private"] = "all"):
     try:
-        return service.get_notification_digest(digest_id).model_dump(mode="json")
+        return service.get_notification_digest(digest_id, owner_scope=owner_scope).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification digest not found.") from exc
 
@@ -1003,6 +1007,7 @@ def send_notification_digest(
     status: str = "new",
     limit: int = 25,
     publish_included: bool = False,
+    owner_scope: Literal["all", "shared", "private"] = "all",
 ):
     try:
         return service.send_notification_digest(
@@ -1010,6 +1015,7 @@ def send_notification_digest(
             status=status,
             limit=limit,
             publish_included=publish_included,
+            owner_scope=owner_scope,
         ).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
@@ -1018,8 +1024,8 @@ def send_notification_digest(
 
 
 @app.post("/api/notifications/digests/run-due")
-def run_due_notification_digests():
-    return [item.model_dump(mode="json") for item in service.run_due_notification_digests()]
+def run_due_notification_digests(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return [item.model_dump(mode="json") for item in service.run_due_notification_digests(owner_scope=owner_scope)]
 
 
 @app.post("/api/screens/run")
