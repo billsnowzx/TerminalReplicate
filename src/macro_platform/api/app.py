@@ -699,8 +699,8 @@ def restore_source_health_policy(policy_id: str, allow_shared_mutation: bool = T
 
 
 @app.post("/api/status/sources/policies/run")
-def run_source_health_policies():
-    return service.run_source_health_policies()
+def run_source_health_policies(owner_scope: Literal["all", "shared", "private"] = "all"):
+    return service.run_source_health_policies(owner_scope=owner_scope)
 
 
 @app.get("/api/monitors/changes")

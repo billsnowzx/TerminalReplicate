@@ -1868,10 +1868,15 @@ class PlatformService:
         self,
         now: datetime | None = None,
         trigger: str = "manual",
+        owner_scope: Literal["all", "shared", "private"] = "all",
     ) -> list[dict[str, object]]:
         started_at = now or datetime.now()
         sources = self.list_source_health(limit=5000)
-        policies = self.list_source_health_policies(active_only=True, limit=500)
+        policies = self.list_source_health_policies(
+            active_only=True,
+            limit=500,
+            owner_scope=owner_scope,
+        )
         actions: list[dict[str, object]] = []
         for policy in policies:
             if not policy.notification_channel_ids:

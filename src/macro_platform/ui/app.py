@@ -1234,7 +1234,7 @@ elif view == "Data Quality":
                             key=f"source_policy_compare_csv_{state_key}",
                         )
         if st.button("Run source health policies"):
-            actions = service.run_source_health_policies()
+            actions = service.run_source_health_policies(owner_scope=policy_catalog_scope)
             st.success(f"Executed source health policies: {len(actions)} action(s)")
             st.dataframe(pd.DataFrame(actions), use_container_width=True)
         policies = pd.DataFrame(

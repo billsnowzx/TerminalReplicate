@@ -2642,6 +2642,72 @@ def test_source_health_policy_run_history_respects_owner_scope(client):
     )
 
 
+def test_source_health_policy_run_endpoint_respects_owner_scope(client):
+    channel_payload = {
+        "id": "source-policy-run-endpoint-scope-drop",
+        "name": "Source Policy Run Endpoint Scope Drop",
+        "kind": "file",
+        "target": "source-policy-run-endpoint-scope",
+        "event_types": ["manual"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    assert client.post("/api/notifications/channels", json=channel_payload).status_code == 200
+    assert client.post(
+        "/api/observations/query",
+        json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+    ).status_code == 200
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fred down"))
+    try:
+        assert client.post(
+            "/api/observations/query",
+            json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+        ).status_code == 200
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+
+    shared_policy = {
+        "id": "source-policy-run-endpoint-shared",
+        "name": "Source Policy Run Endpoint Shared",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": True,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-run-endpoint-scope-drop"],
+        "owner_scope": "shared",
+        "active": True,
+    }
+    private_policy = {
+        "id": "source-policy-run-endpoint-private",
+        "name": "Source Policy Run Endpoint Private",
+        "source_kind": "macro",
+        "source_id": "macro:fred",
+        "trigger_on_degraded": True,
+        "trigger_on_down": True,
+        "trigger_on_stale": False,
+        "min_consecutive_failures": 1,
+        "cooldown_minutes": 0,
+        "notification_channel_ids": ["source-policy-run-endpoint-scope-drop"],
+        "owner_scope": "private",
+        "active": True,
+    }
+    assert client.post("/api/status/sources/policies", json=shared_policy).status_code == 200
+    assert client.post("/api/status/sources/policies", json=private_policy).status_code == 200
+
+    scoped_run = client.post(
+        "/api/status/sources/policies/run",
+        params={"owner_scope": "shared"},
+    )
+    assert scoped_run.status_code == 200
+    actions = scoped_run.json()
+    assert len(actions) >= 1
+    assert all(item.get("policy_id") == "source-policy-run-endpoint-shared" for item in actions)
+
+
 def test_source_health_policy_can_be_updated_and_deactivated(client):
     channel_payload = {
         "id": "source-policy-edit-drop",
