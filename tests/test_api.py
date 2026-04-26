@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from macro_platform.api import app as api_module
-from macro_platform.domain.models import Observation, ReleaseEvent
+from macro_platform.domain.models import Observation, ObservationQuery, ReleaseEvent
 from macro_platform.services.platform import PlatformService
 from macro_platform.services.report_scheduler import ReportScheduler
 
@@ -67,6 +67,199 @@ def test_series_source_registry_endpoint_returns_source_coverage(client):
         assert by_source[source]["series_count"] >= 1
         assert "countries" in by_source[source]
         assert "topics" in by_source[source]
+
+
+def test_v1_workspace_endpoint_exposes_connector_data_states(client):
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = api_module.service.demo_macro.fetch_observations
+    try:
+        response = client.get("/api/v1/workspace")
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["macro"]) >= 1
+    assert len(payload["cross_asset"]) >= 1
+    assert payload["regime"]["regime"]
+    source_map = {item["source_id"]: item for item in payload["sources"]}
+    assert source_map["macro:fred"]["data_state"] == "real"
+    assert source_map["market:prices"]["data_state"] == "demo_fallback"
+    assert "source_summary" in payload
+    assert payload["macro_brief_job"]["exists"] is False
+    assert payload["macro_brief_job"]["status"] == "not_configured"
+    assert payload["macro_brief_history"] == []
+
+
+def test_v1_workspace_refresh_endpoint_returns_workspace_payload(client):
+    response = client.post("/api/v1/workspace/refresh")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "refreshed_at" in payload
+    assert "workspace" in payload
+    assert payload["job_run"] is None
+    assert "macro" in payload["workspace"]
+    assert "cross_asset" in payload["workspace"]
+
+
+def test_v1_workspace_refresh_can_run_macro_brief_job(client):
+    response = client.post("/api/v1/workspace/refresh", params={"run_macro_brief_job": True})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job_run"] is not None
+    assert payload["job_run"]["id"] == "v1-macro-brief-job"
+    assert payload["job_run"]["last_snapshot_id"] is not None
+
+
+def test_global_monitor_rows_include_source_data_state_fields(client):
+    response = client.get("/api/monitors/global")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) >= 1
+    first = payload[0]
+    assert "source_id" in first
+    assert "source_status" in first
+    assert "data_state" in first
+    assert "is_stale" in first
+
+
+def test_cross_asset_monitor_rows_include_source_data_state_fields(client):
+    response = client.get("/api/markets/monitor")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) >= 1
+    first = payload[0]
+    assert first["source_id"] == "market:prices"
+    assert "source_status" in first
+    assert "data_state" in first
+    assert "is_stale" in first
+
+
+def test_v1_macro_brief_endpoint_generates_snapshot_with_default_exports(client):
+    response = client.post("/api/v1/reports/macro-brief")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["template_id"] == "v1-macro-brief"
+    assert payload["name"].startswith("V1 Macro Brief ")
+    assert "markdown" in payload["export_paths"]
+    assert "xlsx" in payload["export_paths"]
+    assert Path(payload["export_paths"]["markdown"]).exists()
+    assert Path(payload["export_paths"]["xlsx"]).exists()
+
+
+def test_v1_macro_brief_endpoint_rejects_invalid_export_format(client):
+    response = client.post(
+        "/api/v1/reports/macro-brief",
+        params={"export_format": ["markdown", "bad_format"]},
+    )
+    assert response.status_code == 400
+    assert "Unsupported export formats" in response.json()["detail"]
+
+
+def test_v1_macro_brief_complete_exports_endpoint_generates_missing_formats(client):
+    created = client.post(
+        "/api/v1/reports/macro-brief",
+        params={"export_format": ["markdown", "xlsx"]},
+    )
+    assert created.status_code == 200
+    snapshot_id = created.json()["id"]
+    assert "csv_zip" not in created.json()["export_paths"]
+    completed = client.post(
+        f"/api/v1/reports/macro-brief/snapshots/{snapshot_id}/complete-exports",
+        params={"expected_format": ["markdown", "xlsx", "csv_zip"]},
+    )
+    assert completed.status_code == 200
+    export_paths = completed.json()["export_paths"]
+    assert "markdown" in export_paths
+    assert "xlsx" in export_paths
+    assert "csv_zip" in export_paths
+    assert Path(export_paths["csv_zip"]).exists()
+
+
+def test_v1_macro_brief_job_bootstrap_endpoint_creates_shared_daily_job(client):
+    response = client.post(
+        "/api/v1/reports/macro-brief/job/bootstrap",
+        params={"run_hour_local": 6, "export_format": ["markdown", "xlsx"]},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "v1-macro-brief-job"
+    assert payload["template_id"] == "v1-macro-brief"
+    assert payload["cadence"] == "daily"
+    assert payload["run_hour_local"] == 6
+    assert payload["owner_scope"] == "shared"
+    assert payload["export_formats"] == ["markdown", "xlsx"]
+
+
+def test_v1_macro_brief_job_run_endpoint_executes_and_persists_snapshot(client):
+    bootstrap = client.post("/api/v1/reports/macro-brief/job/bootstrap")
+    assert bootstrap.status_code == 200
+    run = client.post("/api/v1/reports/macro-brief/job/run")
+    assert run.status_code == 200
+    payload = run.json()
+    assert payload["id"] == "v1-macro-brief-job"
+    assert payload["last_snapshot_id"] is not None
+    snapshot = client.get(f"/api/reports/snapshots/{payload['last_snapshot_id']}")
+    assert snapshot.status_code == 200
+    exports = snapshot.json()["export_paths"]
+    assert "markdown" in exports
+    assert "xlsx" in exports
+    assert Path(exports["markdown"]).exists()
+    assert Path(exports["xlsx"]).exists()
+    workspace = client.get("/api/v1/workspace")
+    assert workspace.status_code == 200
+    workspace_payload = workspace.json()
+    assert workspace_payload["macro_brief_job"]["exists"] is True
+    assert workspace_payload["macro_brief_job"]["status"] in {"healthy", "failing", "paused"}
+    assert len(workspace_payload["macro_brief_history"]) >= 1
+    assert workspace_payload["macro_brief_history"][0]["template_id"] == "v1-macro-brief"
+
+
+def test_series_data_status_endpoint_reports_real_after_successful_fetch(client):
+    rows = [
+        Observation(
+            series_id="fred:CPIAUCSL",
+            date=date(2024, 1, 1),
+            value=300.0,
+            vintage_date=date(2024, 2, 1),
+            status="final",
+        )
+    ]
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: rows
+    try:
+        assert client.post("/api/observations/query", json={"series_id": "fred:CPIAUCSL"}).status_code == 200
+        response = client.get("/api/status/series-data/fred:CPIAUCSL")
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source_id"] == "macro:fred"
+    assert payload["provider"] == "fred"
+    assert payload["data_state"] == "real"
+
+
+def test_macro_demo_fallback_does_not_overwrite_cached_real_rows(client):
+    cached = [
+        Observation(
+            series_id="fred:CPIAUCSL",
+            date=date(2024, 1, 1),
+            value=300.0,
+            vintage_date=date(2024, 2, 1),
+            status="final",
+        )
+    ]
+    api_module.service.observation_repo.replace_range("fred:CPIAUCSL", cached)
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("down"))
+    try:
+        rows = api_module.service.query_observations(ObservationQuery(series_id="fred:CPIAUCSL"))
+        persisted = api_module.service.observation_repo.get_range("fred:CPIAUCSL")
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
+    assert rows == cached
+    assert persisted == cached
+    status = api_module.service.get_series_data_status("fred:CPIAUCSL")
+    assert status["data_state"] == "cached_or_demo_fallback"
 
 
 def test_series_source_drilldown_endpoint_filters_country_topic_and_limit(client):
@@ -246,10 +439,23 @@ def test_dashboard_custom_endpoint_lists_only_persisted_dashboards(client):
 
 
 def test_observation_query_persists_rows(client):
-    response = client.post(
-        "/api/observations/query",
-        json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
-    )
+    original_fetch = api_module.service.fred.fetch_observations
+    api_module.service.fred.fetch_observations = lambda *args, **kwargs: [
+        Observation(
+            series_id="fred:CPIAUCSL",
+            date=date(2025, 1, 1),
+            value=315.0,
+            vintage_date=date(2025, 2, 1),
+            status="final",
+        )
+    ]
+    try:
+        response = client.post(
+            "/api/observations/query",
+            json={"series_id": "fred:CPIAUCSL", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+        )
+    finally:
+        api_module.service.fred.fetch_observations = original_fetch
     assert response.status_code == 200
     assert api_module.service.observation_repo.count_rows("fred:CPIAUCSL") > 0
 

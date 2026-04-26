@@ -414,7 +414,7 @@ TRACKED_SERIES: list[SeriesDefinition] = [
         nominal_real="real",
         release_lag="Periodic",
         tags=["growth", "imf", "us"],
-        provider_params={"country_code": "US"},
+        provider_params={"country_code": "USA"},
     ),
     SeriesDefinition(
         id="imf:CN:NGDP_RPCH",
@@ -428,7 +428,7 @@ TRACKED_SERIES: list[SeriesDefinition] = [
         nominal_real="real",
         release_lag="Periodic",
         tags=["growth", "imf", "china"],
-        provider_params={"country_code": "CN"},
+        provider_params={"country_code": "CHN"},
     ),
     SeriesDefinition(
         id="oecd:US:LRUN64TT",

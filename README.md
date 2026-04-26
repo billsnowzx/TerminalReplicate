@@ -5,10 +5,12 @@ OpenBB-first research platform scaffold for macro analysis, cross-asset monitori
 ## What is implemented
 
 - Canonical domain model for series, observations, prices, screens, and dashboards
-- Source adapters for FRED and World Bank
+- Source adapters for FRED, World Bank, BLS, ECB, IMF, OECD, and optional OpenBB/Yahoo market data
+- Explicit connector data-state visibility for real, cached, and demo-fallback data
 - Optional OpenBB-backed market data provider with deterministic demo fallback
 - FastAPI app exposing catalog, observations, prices, screens, scenarios, portfolios, reports, and dashboards
-- Streamlit UI with global monitor, cross-country, cross-asset, regime, research-library, portfolio-lab, and report-studio views
+- Streamlit UI with V1 analyst workspace, global monitor, cross-country, cross-asset, regime, research-library, portfolio-lab, and report-studio views
+- V1 Macro Brief generation path for standardized prototype outputs (markdown/xlsx by default)
 - Raw snapshot archival helpers
 - Database-backed normalized observations, market prices, dashboards, watchlists, saved screens, scenarios, model portfolios, and report templates/snapshots
 - Snapshot exports in markdown, JSON, zipped CSV bundles, XLSX workbooks, and PPTX decks
@@ -60,16 +62,49 @@ Run the Streamlit app:
 streamlit run src/macro_platform/ui/app.py
 ```
 
+Optional live connector smoke test:
+
+```bash
+python scripts/live_connector_smoke.py --allow-fail
+```
+
+Bootstrap and refresh V1 workspace:
+
+```bash
+python scripts/bootstrap_v1_workspace.py
+python scripts/bootstrap_v1_workspace.py --run-macro-brief-job
+```
+
+Generate a V1 Macro Brief via API:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/reports/macro-brief"
+```
+
+Bootstrap and run the scheduled V1 Macro Brief job:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/reports/macro-brief/job/bootstrap"
+curl -X POST "http://127.0.0.1:8000/api/v1/reports/macro-brief/job/run"
+```
+
+Complete missing exports for an existing V1 Macro Brief snapshot:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/reports/macro-brief/snapshots/<snapshot_id>/complete-exports"
+```
+
 ## Environment
 
 Copy `.env.example` to `.env` and adjust values if needed.
 
 Key defaults:
 
-- API runs offline-friendly with demo market data when OpenBB is not installed
+- API runs offline-friendly with source-health visibility when public APIs or OpenBB are unavailable
 - Local development defaults to SQLite via `DATABASE_URL=sqlite:///./data/macro_platform.db`
 - Docker Compose runs against Postgres/Timescale via the `db` service
 - FRED API key is optional for public series
+- BLS API key can be set with `BLS_API_KEY` to avoid unauthenticated request limits
 - Raw snapshots are archived to `data/raw/`
 - Notification drops are written under `data/notifications/`
 - Optional background scheduler can be enabled with `ENABLE_REPORT_SCHEDULER=true`

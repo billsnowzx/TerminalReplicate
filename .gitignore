@@ -2,6 +2,7 @@
 __pycache__/
 .pytest_cache/
 .streamlit/
+.env
 node_modules/
 *.egg-info/
 *.pyc

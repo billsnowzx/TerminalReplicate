@@ -278,6 +278,101 @@ class PlatformService:
             )
         return rows
 
+    def get_data_source_status(
+        self,
+        source_id: str,
+        source_kind: Literal["macro", "market"] | None = None,
+    ) -> dict[str, object]:
+        source = self.source_health_repo.get(source_id)
+        if source is None:
+            parsed_kind, parsed_provider = _parse_source_id(source_id)
+            return {
+                "source_id": source_id,
+                "source_kind": source_kind or parsed_kind,
+                "provider": parsed_provider,
+                "status": "unknown",
+                "data_state": "not_checked",
+                "fallback_used": False,
+                "is_stale": False,
+                "last_checked_at": None,
+                "last_success_at": None,
+                "last_failure_at": None,
+                "last_error": None,
+                "notes": None,
+            }
+        source.is_stale = _source_health_is_stale(source, now=datetime.now())
+        return {
+            "source_id": source.id,
+            "source_kind": source.source_kind,
+            "provider": source.provider,
+            "status": source.status,
+            "data_state": _source_data_state(source),
+            "fallback_used": source.fallback_used,
+            "is_stale": source.is_stale,
+            "last_checked_at": source.last_checked_at,
+            "last_success_at": source.last_success_at,
+            "last_failure_at": source.last_failure_at,
+            "last_error": source.last_error,
+            "notes": source.notes,
+        }
+
+    def get_series_data_status(self, series_id: str) -> dict[str, object]:
+        definition = self.get_series(series_id)
+        return self.get_data_source_status(f"macro:{definition.source}", source_kind="macro")
+
+    def get_market_data_status(self) -> dict[str, object]:
+        return self.get_data_source_status("market:prices", source_kind="market")
+
+    def get_v1_workspace(self) -> dict[str, object]:
+        macro_rows = self.get_global_macro_monitor()
+        cross_asset_rows = self.get_cross_asset_monitor()
+        regime = self.get_regime_snapshot()
+        source_rows = [
+            self.get_data_source_status(f"macro:{source}", source_kind="macro")
+            for source in ["fred", "bls", "ecb", "world_bank", "imf", "oecd"]
+        ]
+        source_rows.append(self.get_market_data_status())
+        source_summary = Counter(str(row["data_state"]) for row in source_rows)
+        all_snapshots = self.list_report_snapshots()
+        latest_reports = [item.model_dump(mode="json") for item in all_snapshots[:5]]
+        macro_brief_history = [
+            item.model_dump(mode="json")
+            for item in all_snapshots
+            if item.template_id == "v1-macro-brief"
+        ][:10]
+        return {
+            "generated_at": datetime.now(),
+            "macro": macro_rows,
+            "cross_asset": cross_asset_rows,
+            "regime": regime,
+            "sources": source_rows,
+            "source_summary": dict(source_summary),
+            "macro_brief_job": self.get_v1_macro_brief_job_summary(),
+            "macro_brief_history": macro_brief_history,
+            "latest_reports": latest_reports,
+        }
+
+    def refresh_v1_workspace(self, run_macro_brief_job: bool = False) -> dict[str, object]:
+        job_run: dict[str, object] | None = None
+        if run_macro_brief_job:
+            job = self.run_v1_macro_brief_job()
+            job_run = job.model_dump(mode="json")
+        workspace = self.get_v1_workspace()
+        return {
+            "refreshed_at": datetime.now(),
+            "workspace": workspace,
+            "job_run": job_run,
+        }
+
+    def _monitor_source_flags(self, source_id: str, source_kind: Literal["macro", "market"]) -> dict[str, object]:
+        status = self.get_data_source_status(source_id, source_kind=source_kind)
+        return {
+            "source_id": status.get("source_id"),
+            "source_status": status.get("status"),
+            "data_state": status.get("data_state"),
+            "is_stale": bool(status.get("is_stale", False)),
+        }
+
     def list_series_by_source(
         self,
         source: str,
@@ -302,6 +397,7 @@ class PlatformService:
         cached_rows = self.observation_repo.get_range(query.series_id, query.start_date, query.end_date)
         source_id = f"macro:{definition.source}"
         now = datetime.now()
+        persist_rows = False
         try:
             if definition.source == "fred":
                 rows = self.fred.fetch_observations(definition, query.start_date, query.end_date)
@@ -317,6 +413,7 @@ class PlatformService:
                 rows = self.world_bank.fetch_observations(definition, query.start_date, query.end_date)
             else:
                 rows = self.demo_macro.fetch_observations(definition, query.start_date, query.end_date)
+            persist_rows = definition.source != "demo"
             self._record_source_health(
                 source_id=source_id,
                 source_kind="macro",
@@ -327,24 +424,24 @@ class PlatformService:
                 fallback_used=False,
                 notes=f"series_id={query.series_id}",
             )
-        except Exception:
+        except Exception as exc:
             rows = cached_rows or self.demo_macro.fetch_observations(definition, query.start_date, query.end_date)
             degraded_status = "degraded" if rows else "down"
+            error_code, error_summary = _classify_connector_error(exc)
             self._record_source_health(
                 source_id=source_id,
                 source_kind="macro",
                 provider=definition.source,
                 status=degraded_status,
                 last_checked_at=now,
-                last_success_at=now if rows else None,
                 last_failure_at=now,
                 fallback_used=True,
-                error_message=f"{definition.source} fetch failed for {query.series_id}",
+                error_message=f"{definition.source} fetch failed ({error_code}) for {query.series_id}: {error_summary}",
                 notes="served from cache_or_demo_fallback",
             )
 
         frame = pd.DataFrame([row.model_dump(mode="json") for row in rows])
-        if not frame.empty:
+        if persist_rows and not frame.empty:
             snapshot_name = query.series_id.replace(":", "_").replace("/", "_").replace(".", "_")
             write_raw_snapshot(snapshot_name, frame)
             self.observation_repo.replace_range(query.series_id, rows)
@@ -377,7 +474,8 @@ class PlatformService:
                     notes=f"ticker={ticker}",
                 )
                 return rows
-            except Exception:
+            except Exception as exc:
+                error_code, error_summary = _classify_connector_error(exc)
                 self._record_source_health(
                     source_id="market:prices",
                     source_kind="market",
@@ -386,7 +484,7 @@ class PlatformService:
                     last_checked_at=now,
                     last_failure_at=now,
                     fallback_used=True,
-                    error_message=f"openbb fetch failed for {ticker}",
+                    error_message=f"openbb fetch failed ({error_code}) for {ticker}: {error_summary}",
                     notes="falling back to demo_or_cache",
                 )
         try:
@@ -403,7 +501,8 @@ class PlatformService:
                 notes=f"ticker={ticker}",
             )
             return rows
-        except Exception:
+        except Exception as exc:
+            error_code, error_summary = _classify_connector_error(exc)
             self._record_source_health(
                 source_id="market:prices",
                 source_kind="market",
@@ -413,19 +512,20 @@ class PlatformService:
                 last_success_at=now if cached_rows else None,
                 last_failure_at=now,
                 fallback_used=True,
-                error_message=f"demo provider failed for {ticker}",
+                error_message=f"demo provider failed ({error_code}) for {ticker}: {error_summary}",
                 notes="served from cached prices" if cached_rows else "no fallback available",
             )
             return cached_rows
 
-    def get_cross_asset_monitor(self) -> list[dict[str, float | str]]:
-        rows: list[dict[str, float | str]] = []
+    def get_cross_asset_monitor(self) -> list[dict[str, float | str | bool | None]]:
+        rows: list[dict[str, float | str | bool | None]] = []
         for ticker, asset_class in self.market_universe.items():
             prices = self.get_prices(ticker)
             if not prices:
                 continue
             frame = pd.DataFrame([item.model_dump(mode="json") for item in prices])
             closes = frame["close"]
+            source_flags = self._monitor_source_flags("market:prices", source_kind="market")
             rows.append(
                 {
                     "ticker": ticker,
@@ -434,13 +534,17 @@ class PlatformService:
                     "return_21d": round(float(closes.pct_change(21).iloc[-1] * 100), 2),
                     "return_63d": round(float(closes.pct_change(63).iloc[-1] * 100), 2),
                     "drawdown": round(float(drawdown(closes).iloc[-63:].min() * 100), 2),
+                    "source_id": source_flags["source_id"],
+                    "source_status": source_flags["source_status"],
+                    "data_state": source_flags["data_state"],
+                    "is_stale": source_flags["is_stale"],
                 }
             )
         return rows
 
-    def get_global_macro_monitor(self) -> list[dict[str, float | str | None]]:
+    def get_global_macro_monitor(self) -> list[dict[str, float | str | bool | None]]:
         tracked = ["fred:CPIAUCSL", "fred:UNRATE", "fred:PAYEMS", "fred:FEDFUNDS"]
-        rows: list[dict[str, float | str | None]] = []
+        rows: list[dict[str, float | str | bool | None]] = []
         for series_id in tracked:
             observations = self.query_observations(
                 ObservationQuery(series_id=series_id, start_date=date.today() - timedelta(days=365 * 4))
@@ -453,6 +557,10 @@ class PlatformService:
             if self.series_map[series_id].frequency == "monthly":
                 series = frame.sort_values("date").set_index("date")["value"].asfreq("MS")
                 yoy = float(year_over_year(series).iloc[-1])
+            source_flags = self._monitor_source_flags(
+                f"macro:{self.series_map[series_id].source}",
+                source_kind="macro",
+            )
             rows.append(
                 {
                     "series_id": series_id,
@@ -460,6 +568,10 @@ class PlatformService:
                     "latest": round(current, 2),
                     "yoy": round(yoy, 2) if yoy is not None and pd.notna(yoy) else None,
                     "unit": self.series_map[series_id].unit,
+                    "source_id": source_flags["source_id"],
+                    "source_status": source_flags["source_status"],
+                    "data_state": source_flags["data_state"],
+                    "is_stale": source_flags["is_stale"],
                 }
             )
         return rows
@@ -3518,6 +3630,137 @@ class PlatformService:
         snapshot.export_paths["json"] = str(json_path)
         return self.report_snapshot_repo.save(snapshot)
 
+    def ensure_v1_macro_brief_template(self) -> ReportTemplate:
+        existing = self.report_template_repo.get("v1-macro-brief")
+        v1_sections = [
+            ReportTemplateSection(kind="global_monitor", title="Global Macro Snapshot"),
+            ReportTemplateSection(kind="cross_asset_monitor", title="Cross-Asset Snapshot"),
+            ReportTemplateSection(kind="source_health", title="Connector Source Health"),
+        ]
+        if existing is not None:
+            if [section.kind for section in existing.sections] != [section.kind for section in v1_sections]:
+                existing.sections = v1_sections
+                existing.notes = "Prototype macro brief generated from connector-backed V1 workspace."
+                return self.report_template_repo.save(existing)
+            return existing
+        template = ReportTemplate(
+            id="v1-macro-brief",
+            name="V1 Macro Brief",
+            owner_scope="shared",
+            sections=v1_sections,
+            notes="Prototype macro brief generated from connector-backed V1 workspace.",
+        )
+        return self.report_template_repo.save(template)
+
+    def generate_v1_macro_brief(
+        self,
+        export_formats: list[str] | None = None,
+        name_override: str | None = None,
+    ) -> ReportSnapshot:
+        requested_formats = export_formats or ["markdown", "xlsx"]
+        allowed_formats = {"markdown", "json", "csv_zip", "xlsx", "pptx"}
+        invalid = [item for item in requested_formats if item not in allowed_formats]
+        if invalid:
+            raise ValueError(f"Unsupported export formats: {', '.join(sorted(set(invalid)))}")
+        template = self.ensure_v1_macro_brief_template()
+        snapshot_name = name_override or f"V1 Macro Brief {date.today().isoformat()}"
+        snapshot = self.generate_report_snapshot(template.id, name_override=snapshot_name)
+        for export_format in requested_formats:
+            snapshot = self.export_report_snapshot(snapshot.id, export_format)
+        return snapshot
+
+    def complete_v1_macro_brief_snapshot_exports(
+        self,
+        snapshot_id: str,
+        expected_formats: list[str] | None = None,
+    ) -> ReportSnapshot:
+        expected = expected_formats or ["markdown", "xlsx", "json", "csv_zip", "pptx"]
+        snapshot = self.get_report_snapshot(snapshot_id)
+        if snapshot.template_id != "v1-macro-brief":
+            raise ValueError("Snapshot is not a V1 Macro Brief.")
+        missing = [item for item in expected if item not in snapshot.export_paths]
+        for export_format in missing:
+            snapshot = self.export_report_snapshot(snapshot.id, export_format)
+        return snapshot
+
+    def bootstrap_v1_macro_brief_job(
+        self,
+        *,
+        cadence: Literal["manual", "daily", "weekly"] = "daily",
+        run_hour_local: int = 7,
+        run_day_of_week: int | None = None,
+        export_formats: list[str] | None = None,
+        notification_channel_ids: list[str] | None = None,
+        active: bool = True,
+        replace_existing: bool = False,
+    ) -> ReportJob:
+        self.ensure_v1_macro_brief_template()
+        job_id = "v1-macro-brief-job"
+        existing = self.report_job_repo.get(job_id)
+        if existing is not None and not replace_existing:
+            return existing
+        requested_formats = export_formats or ["markdown", "xlsx"]
+        job = ReportJob(
+            id=job_id,
+            name="V1 Macro Brief Job",
+            template_id="v1-macro-brief",
+            cadence=cadence,
+            run_hour_local=run_hour_local,
+            run_day_of_week=run_day_of_week,
+            export_formats=requested_formats,
+            notification_channel_ids=notification_channel_ids or [],
+            owner_scope="shared",
+            active=active,
+        )
+        return self.save_report_job(job, allow_shared_mutation=True)
+
+    def run_v1_macro_brief_job(
+        self,
+        *,
+        trigger: str = "manual",
+    ) -> ReportJob:
+        job = self.bootstrap_v1_macro_brief_job()
+        return self.run_report_job(job.id, trigger=trigger)
+
+    def get_v1_macro_brief_job_summary(self) -> dict[str, object]:
+        job = self.report_job_repo.get("v1-macro-brief-job")
+        if job is None:
+            return {
+                "exists": False,
+                "id": "v1-macro-brief-job",
+                "name": "V1 Macro Brief Job",
+                "status": "not_configured",
+                "active": False,
+                "cadence": None,
+                "run_hour_local": None,
+                "run_day_of_week": None,
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_run_status": None,
+                "consecutive_failures": 0,
+                "last_error_message": None,
+            }
+        status = "healthy"
+        if not job.active:
+            status = "paused"
+        elif job.last_run_status == "failed":
+            status = "failing"
+        return {
+            "exists": True,
+            "id": job.id,
+            "name": job.name,
+            "status": status,
+            "active": job.active,
+            "cadence": job.cadence,
+            "run_hour_local": job.run_hour_local,
+            "run_day_of_week": job.run_day_of_week,
+            "next_run_at": job.next_run_at,
+            "last_run_at": job.last_run_at,
+            "last_run_status": job.last_run_status,
+            "consecutive_failures": job.consecutive_failures,
+            "last_error_message": job.last_error_message,
+        }
+
     def export_report_snapshot(self, snapshot_id: str, export_format: str) -> ReportSnapshot:
         snapshot = self.get_report_snapshot(snapshot_id)
         if export_format == "markdown":
@@ -3803,6 +4046,17 @@ class PlatformService:
                 kind=section.kind,
                 title=section.title,
                 content=f"{len(rows)} expected releases over the next {days} days.",
+                rows=rows,
+            )
+        if section.kind == "source_health":
+            workspace = self.get_v1_workspace()
+            rows = workspace["sources"]
+            summary = workspace["source_summary"]
+            summary_text = ", ".join(f"{key}: {value}" for key, value in sorted(summary.items())) or "no sources checked"
+            return ReportSnapshotSection(
+                kind=section.kind,
+                title=section.title,
+                content=f"Connector states: {summary_text}.",
                 rows=rows,
             )
         if section.kind == "saved_screen":
@@ -4963,6 +5217,32 @@ def _source_health_is_stale(source: SourceHealth, now: datetime) -> bool:
         return False
     stale_after = max(1, int(source.stale_threshold_minutes))
     return source.last_success_at < (now - timedelta(minutes=stale_after))
+
+
+def _source_data_state(source: SourceHealth) -> str:
+    if source.provider == "demo":
+        return "demo_fallback"
+    if source.fallback_used:
+        return "cached_or_demo_fallback"
+    if source.status == "healthy":
+        return "real"
+    if source.status == "unknown":
+        return "not_checked"
+    return source.status
+
+
+def _classify_connector_error(exc: Exception) -> tuple[str, str]:
+    message = str(exc).strip()
+    lowered = message.lower()
+    if "threshold" in lowered or "registration key" in lowered:
+        return "quota_limited", message[:200]
+    if "forbidden" in lowered or "just a moment" in lowered or "cloudflare" in lowered:
+        return "network_blocked", message[:200]
+    if "bad request" in lowered and "fred" in lowered:
+        return "auth_required", message[:200]
+    if "timeout" in lowered:
+        return "timeout", message[:200]
+    return "error", message[:200]
 
 
 def _parse_source_id(source_id: str) -> tuple[str, str]:

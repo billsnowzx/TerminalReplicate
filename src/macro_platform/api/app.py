@@ -116,6 +116,93 @@ def get_prices(
     return [item.model_dump(mode="json") for item in service.get_prices(ticker, start, end)]
 
 
+@app.get("/api/v1/workspace")
+def v1_workspace():
+    return service.get_v1_workspace()
+
+
+@app.post("/api/v1/workspace/refresh")
+def refresh_v1_workspace(run_macro_brief_job: bool = False):
+    return service.refresh_v1_workspace(run_macro_brief_job=run_macro_brief_job)
+
+
+@app.post("/api/v1/reports/macro-brief")
+def v1_macro_brief(
+    export_format: list[str] | None = Query(default=None),
+    name: str | None = Query(default=None, min_length=1),
+):
+    try:
+        return service.generate_v1_macro_brief(
+            export_formats=export_format,
+            name_override=name,
+        ).model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/reports/macro-brief/snapshots/{snapshot_id}/complete-exports")
+def complete_v1_macro_brief_snapshot_exports(
+    snapshot_id: str,
+    expected_format: list[str] | None = Query(default=None),
+):
+    try:
+        return service.complete_v1_macro_brief_snapshot_exports(
+            snapshot_id=snapshot_id,
+            expected_formats=expected_format,
+        ).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Report snapshot not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/reports/macro-brief/job/bootstrap")
+def bootstrap_v1_macro_brief_job(
+    cadence: Literal["manual", "daily", "weekly"] = "daily",
+    run_hour_local: int = Query(default=7, ge=0, le=23),
+    run_day_of_week: int | None = Query(default=None, ge=0, le=6),
+    export_format: list[str] | None = Query(default=None),
+    channel_id: list[str] | None = Query(default=None),
+    active: bool = True,
+    replace_existing: bool = False,
+):
+    try:
+        return service.bootstrap_v1_macro_brief_job(
+            cadence=cadence,
+            run_hour_local=run_hour_local,
+            run_day_of_week=run_day_of_week,
+            export_formats=export_format,
+            notification_channel_ids=channel_id,
+            active=active,
+            replace_existing=replace_existing,
+        ).model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Notification channel not found.") from exc
+
+
+@app.post("/api/v1/reports/macro-brief/job/run")
+def run_v1_macro_brief_job():
+    try:
+        return service.run_v1_macro_brief_job().model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Report job or template not found.") from exc
+
+
+@app.get("/api/status/data-sources/{source_id:path}")
+def data_source_status(source_id: str):
+    return service.get_data_source_status(source_id)
+
+
+@app.get("/api/status/series-data/{series_id:path}")
+def series_data_status(series_id: str):
+    try:
+        return service.get_series_data_status(series_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Series not found.") from exc
+
+
 @app.get("/api/monitors/global")
 def global_monitor():
     return service.get_global_macro_monitor()

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime, timedelta
+from pathlib import Path
+import subprocess
 from uuid import uuid4
 
 import pandas as pd
@@ -33,12 +36,61 @@ from macro_platform.services.platform import PlatformService
 
 st.set_page_config(page_title="Macro Platform", layout="wide")
 service = PlatformService()
+EXPECTED_BRIEF_EXPORT_FORMATS = ["markdown", "xlsx", "json", "csv_zip", "pptx"]
+
+
+def _open_export_folder(path_text: str) -> tuple[bool, str]:
+    try:
+        target = Path(path_text)
+        if not target.exists():
+            return False, f"Path does not exist: {target}"
+        folder = target if target.is_dir() else target.parent
+        if hasattr(os, "startfile"):
+            os.startfile(str(folder))  # type: ignore[attr-defined]
+            return True, f"Opened folder: {folder}"
+        subprocess.Popen(["xdg-open", str(folder)])  # noqa: S603,S607
+        return True, f"Opened folder: {folder}"
+    except Exception as exc:
+        return False, f"Failed to open folder: {exc}"
+
+
+def _build_brief_history_view_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    decorated: list[dict[str, object]] = []
+    now = datetime.now()
+    expected = set(EXPECTED_BRIEF_EXPORT_FORMATS)
+    for row in rows:
+        exports = row.get("export_paths") if isinstance(row.get("export_paths"), dict) else {}
+        if not isinstance(exports, dict):
+            exports = {}
+        available = sorted(str(item) for item in exports.keys())
+        missing = sorted(expected.difference(available))
+        generated_at_raw = row.get("generated_at")
+        generated_at = pd.to_datetime(generated_at_raw, errors="coerce")
+        age_hours = None
+        if pd.notna(generated_at):
+            age_hours = round((now - generated_at.to_pydatetime()).total_seconds() / 3600, 1)
+        decorated.append(
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "generated_at": generated_at_raw,
+                "age_hours": age_hours,
+                "coverage": f"{len(available)}/{len(expected)}",
+                "coverage_status": "complete" if not missing else "partial",
+                "available_formats": ", ".join(available) if available else "none",
+                "missing_formats": ", ".join(missing) if missing else "none",
+                "summary": row.get("summary"),
+                "export_paths": exports,
+            }
+        )
+    return decorated
 
 
 def render_timeseries(series_id: str, title: str) -> None:
     observations = service.query_observations(
         ObservationQuery(series_id=series_id, start_date=date.today() - timedelta(days=365 * 5))
     )
+    render_series_data_badge(series_id)
     frame = pd.DataFrame([item.model_dump(mode="json") for item in observations])
     if frame.empty:
         st.warning(f"No data available for {series_id}")
@@ -85,33 +137,241 @@ def render_workspace_freshness_badge(workspace: str, alert_limit: int = 200) -> 
         st.info(message)
 
 
+def render_data_state_badge(label: str, status: dict[str, object]) -> None:
+    data_state = str(status.get("data_state", "not_checked"))
+    provider = str(status.get("provider", "unknown"))
+    checked_at = status.get("last_checked_at") or "not checked"
+    message = f"{label}: {data_state} via {provider}; last checked {checked_at}"
+    if data_state == "real":
+        st.caption(message)
+    elif data_state in {"cached_or_demo_fallback", "demo_fallback"}:
+        st.warning(message)
+    else:
+        st.info(message)
+
+
+def render_series_data_badge(series_id: str) -> None:
+    try:
+        render_data_state_badge(series_id, service.get_series_data_status(series_id))
+    except KeyError:
+        st.caption(f"{series_id}: source status unavailable")
+
+
+def render_v1_workspace() -> None:
+    st.subheader("V1 Analyst Workspace")
+    st.caption("Prototype-first workspace using real public connectors when available, with cache/demo fallback shown explicitly.")
+    workspace = service.get_v1_workspace()
+
+    source_summary = workspace["source_summary"]
+    if not isinstance(source_summary, dict):
+        source_summary = {}
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Real sources", int(source_summary.get("real", 0)))
+    summary_cols[1].metric("Fallback sources", int(source_summary.get("cached_or_demo_fallback", 0)) + int(source_summary.get("demo_fallback", 0)))
+    summary_cols[2].metric("Not checked", int(source_summary.get("not_checked", 0)))
+    summary_cols[3].metric("Problem sources", int(source_summary.get("degraded", 0)) + int(source_summary.get("down", 0)))
+
+    left, right = st.columns([2, 1])
+    with left:
+        st.markdown("### Macro Snapshot")
+        macro = pd.DataFrame(workspace["macro"])
+        if not macro.empty and "data_state" in macro.columns:
+            macro_problem = macro[macro["data_state"] != "real"]
+            if not macro_problem.empty:
+                st.warning(f"Macro snapshot includes {len(macro_problem)} fallback/problem rows.")
+        st.dataframe(macro, use_container_width=True, hide_index=True)
+    with right:
+        st.markdown("### Regime")
+        regime = workspace["regime"]
+        if isinstance(regime, dict):
+            st.metric("Current Regime", str(regime.get("regime", "unknown")).title())
+            st.metric("Inflation YoY", regime.get("inflation_yoy"))
+            st.metric("Yield Curve Slope", regime.get("yield_curve_slope"))
+
+    st.markdown("### Cross-Asset Snapshot")
+    cross_asset = pd.DataFrame(workspace["cross_asset"])
+    if not cross_asset.empty and "data_state" in cross_asset.columns:
+        cross_problem = cross_asset[cross_asset["data_state"] != "real"]
+        if not cross_problem.empty:
+            st.warning(f"Cross-asset snapshot includes {len(cross_problem)} fallback/problem rows.")
+    st.dataframe(cross_asset, use_container_width=True, hide_index=True)
+    render_data_state_badge("Market prices", service.get_market_data_status())
+
+    st.markdown("### Connector Status")
+    sources = pd.DataFrame(workspace["sources"])
+    if not sources.empty:
+        columns = [
+            "source_id",
+            "provider",
+            "status",
+            "data_state",
+            "fallback_used",
+            "is_stale",
+            "last_checked_at",
+            "last_error",
+            "notes",
+        ]
+        st.dataframe(sources[[column for column in columns if column in sources.columns]], use_container_width=True, hide_index=True)
+
+    st.markdown("### Research Output")
+    if st.button("Refresh Workspace Data", key="v1_workspace_refresh_btn"):
+        refreshed = service.refresh_v1_workspace(run_macro_brief_job=False)
+        st.success(f"Workspace refreshed at {refreshed['refreshed_at']}")
+
+    job_summary = workspace.get("macro_brief_job", {})
+    if isinstance(job_summary, dict):
+        job_cols = st.columns(4)
+        job_cols[0].metric("Brief Job Status", str(job_summary.get("status", "unknown")).title())
+        job_cols[1].metric("Cadence", str(job_summary.get("cadence", "n/a")).title())
+        job_cols[2].metric("Last Run", str(job_summary.get("last_run_status", "n/a")).title())
+        job_cols[3].metric("Failure Streak", int(job_summary.get("consecutive_failures", 0)))
+        st.caption(
+            "Next run: "
+            f"{job_summary.get('next_run_at') or 'n/a'} | "
+            f"Last run at: {job_summary.get('last_run_at') or 'n/a'}"
+        )
+
+    if st.button("Generate V1 Macro Brief", type="primary"):
+        snapshot = service.generate_v1_macro_brief()
+        st.success(f"Generated {snapshot.name}")
+        st.json(snapshot.export_paths)
+
+    controls_left, controls_right = st.columns(2)
+    with controls_left:
+        if st.button("Bootstrap Daily Macro Brief Job"):
+            job = service.bootstrap_v1_macro_brief_job()
+            st.success(f"Ready: {job.name} ({job.id})")
+            st.json(job.model_dump(mode="json"))
+    with controls_right:
+        if st.button("Run Macro Brief Job Now"):
+            job = service.run_v1_macro_brief_job()
+            st.success(f"Job run completed: {job.id}")
+            st.json(job.model_dump(mode="json"))
+
+    st.markdown("### Macro Brief History")
+    history_rows = workspace.get("macro_brief_history", [])
+    decorated_rows = _build_brief_history_view_rows([item for item in history_rows if isinstance(item, dict)])
+    brief_history = pd.DataFrame(decorated_rows)
+    if not brief_history.empty:
+        st.dataframe(
+            brief_history[
+                [
+                    "id",
+                    "name",
+                    "generated_at",
+                    "age_hours",
+                    "coverage",
+                    "coverage_status",
+                    "available_formats",
+                    "missing_formats",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+        lookup = {item["id"]: item for item in history_rows if isinstance(item, dict) and "id" in item}
+        selected_snapshot_id = st.selectbox(
+            "Selected brief snapshot",
+            options=list(lookup.keys()),
+            format_func=lambda item_id: f"{lookup[item_id].get('name', item_id)} ({item_id})",
+            key="v1_brief_selected_snapshot",
+        )
+        selected = lookup[selected_snapshot_id]
+        selected_row = next((item for item in decorated_rows if item.get("id") == selected_snapshot_id), None)
+        st.caption(f"Summary: {selected.get('summary', 'n/a')}")
+        if selected_row is not None:
+            st.caption(
+                "Coverage: "
+                f"{selected_row['coverage']} ({selected_row['coverage_status']}) | "
+                f"Missing: {selected_row['missing_formats']}"
+            )
+        st.json(selected.get("export_paths", {}))
+        action_left, action_mid, action_right, action_more = st.columns(4)
+        with action_left:
+            selected_export_format = st.selectbox(
+                "Re-export format",
+                ["markdown", "json", "csv_zip", "xlsx", "pptx"],
+                index=3,
+                key="v1_brief_reexport_format",
+            )
+            if st.button("Re-export Selected Brief", key="v1_brief_reexport_btn"):
+                refreshed = service.export_report_snapshot(selected_snapshot_id, selected_export_format)
+                st.success(f"Re-export complete ({selected_export_format}): {refreshed.id}")
+                st.json(refreshed.export_paths)
+        with action_mid:
+            missing_formats = []
+            if selected_row is not None and selected_row.get("missing_formats") != "none":
+                missing_formats = [item.strip() for item in str(selected_row["missing_formats"]).split(",") if item.strip()]
+            if st.button(
+                "Generate Missing Formats",
+                key="v1_brief_complete_exports_btn",
+                disabled=not missing_formats,
+            ):
+                refreshed = service.complete_v1_macro_brief_snapshot_exports(selected_snapshot_id)
+                st.success(f"Generated missing formats: {', '.join(missing_formats)}")
+                st.json(refreshed.export_paths)
+        with action_right:
+            if st.button("Run Job Again", key="v1_brief_run_job_again_btn"):
+                job = service.run_v1_macro_brief_job()
+                st.success(f"Job run completed: {job.id}")
+                st.json(job.model_dump(mode="json"))
+        with action_more:
+            if st.button("Open Export Folder", key="v1_brief_open_folder_btn"):
+                current = service.get_report_snapshot(selected_snapshot_id)
+                export_paths = list(current.export_paths.values())
+                candidate = export_paths[0] if export_paths else current.output_path
+                if candidate:
+                    ok, message = _open_export_folder(str(candidate))
+                    if ok:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                else:
+                    st.warning("No export path is available for this snapshot.")
+    else:
+        st.caption("No V1 Macro Brief snapshots yet.")
+
+    st.markdown("### Latest Reports")
+    reports = pd.DataFrame(workspace.get("latest_reports", []))
+    if not reports.empty:
+        st.dataframe(reports[["id", "name", "generated_at", "summary", "export_paths"]], use_container_width=True, hide_index=True)
+
+
 st.title("Modular Macro Research Platform")
 view = st.sidebar.selectbox(
     "Workspace",
     [
+        "V1 Workspace",
         "Global Macro Monitor",
-        "Country Dashboard",
-        "Cross Country Comparison",
         "Cross Asset Monitor",
         "Regime Monitor",
+        "Cross Country Comparison",
+        "Country Dashboard",
+        "Report Studio",
         "Release Calendar",
         "Data Quality",
+        "Screening Lab",
+        "Research Library",
+        "Portfolio Lab",
         "Change Monitor",
         "Alert Center",
         "Notification Center",
         "Ops Incidents",
-        "Screening Lab",
-        "Research Library",
-        "Portfolio Lab",
-        "Report Studio",
     ],
 )
 render_source_alert_banner()
 render_workspace_freshness_badge(view)
 
-if view == "Global Macro Monitor":
+if view == "V1 Workspace":
+    render_v1_workspace()
+
+elif view == "Global Macro Monitor":
     st.subheader("Global Macro Monitor")
     monitor = pd.DataFrame(service.get_global_macro_monitor())
+    if not monitor.empty and "data_state" in monitor.columns:
+        flagged = monitor[monitor["data_state"] != "real"]
+        if not flagged.empty:
+            st.warning(f"Global macro monitor includes {len(flagged)} fallback/problem rows.")
     st.dataframe(monitor, use_container_width=True)
     left, right = st.columns(2)
     with left:
@@ -333,7 +593,12 @@ elif view == "Cross Country Comparison":
 
 elif view == "Cross Asset Monitor":
     st.subheader("Cross Asset Monitor")
+    render_data_state_badge("Market prices", service.get_market_data_status())
     monitor = pd.DataFrame(service.get_cross_asset_monitor())
+    if not monitor.empty and "data_state" in monitor.columns:
+        flagged = monitor[monitor["data_state"] != "real"]
+        if not flagged.empty:
+            st.warning(f"Cross-asset monitor includes {len(flagged)} fallback/problem rows.")
     st.dataframe(monitor, use_container_width=True)
     ticker = st.selectbox("Ticker", list(service.market_universe.keys()))
     prices = pd.DataFrame([item.model_dump(mode="json") for item in service.get_prices(ticker)])

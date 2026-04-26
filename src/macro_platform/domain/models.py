@@ -519,6 +519,7 @@ class ReportTemplateSection(BaseModel):
         "change_monitor",
         "alert_monitor",
         "release_calendar",
+        "source_health",
         "saved_screen",
         "portfolio_summary",
         "dashboard_summary",

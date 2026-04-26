@@ -26,9 +26,10 @@ class FREDProvider:
     ) -> list[Observation]:
         params = {
             "series_id": definition.source_key,
-            "api_key": settings.fred_api_key or "",
             "file_type": "json",
         }
+        if settings.fred_api_key:
+            params["api_key"] = settings.fred_api_key
         if start_date:
             params["observation_start"] = start_date.isoformat()
         if end_date:
@@ -115,9 +116,20 @@ class BLSProvider:
             "startyear": str(start_date.year if start_date else current_year - 5),
             "endyear": str(end_date.year if end_date else current_year),
         }
+        if settings.bls_api_key:
+            payload["registrationkey"] = settings.bls_api_key
         response = self.session.post(self.base_url, json=payload, timeout=12)
         response.raise_for_status()
-        return _parse_bls_observations(definition, response.json(), start_date, end_date)
+        body = response.json()
+        status = str(body.get("status", ""))
+        if status.upper() == "REQUEST_NOT_PROCESSED":
+            messages = body.get("message", [])
+            if isinstance(messages, list):
+                reason = "; ".join(str(item) for item in messages if item)
+            else:
+                reason = str(messages)
+            raise RuntimeError(f"BLS request not processed: {reason or 'unknown reason'}")
+        return _parse_bls_observations(definition, body, start_date, end_date)
 
 
 class ECBProvider:
@@ -286,6 +298,15 @@ def write_raw_snapshot(name: str, frame: pd.DataFrame) -> Path:
 
 def _frame_to_prices(frame: pd.DataFrame, ticker: str, asset_class: str, source: str) -> list[AssetPrice]:
     normalized = frame.copy()
+    normalized.columns = [str(column).lower() for column in normalized.columns]
+    if "date" not in normalized.columns:
+        # OpenBB/yfinance often returns datetime index without a "date" column.
+        normalized = normalized.reset_index()
+        normalized.columns = [str(column).lower() for column in normalized.columns]
+    if "date" not in normalized.columns and "index" in normalized.columns:
+        normalized = normalized.rename(columns={"index": "date"})
+    if "adjclose" in normalized.columns and "adj_close" not in normalized.columns:
+        normalized["adj_close"] = normalized["adjclose"]
     normalized["date"] = pd.to_datetime(normalized["date"]).dt.date
     if "adj_close" not in normalized.columns:
         normalized["adj_close"] = normalized["close"]
@@ -324,6 +345,10 @@ def _parse_bls_observations(
         if not item.get("period", "").startswith("M"):
             continue
         current_date = date(int(item["year"]), int(item["period"][1:]), 1)
+        try:
+            value = float(item["value"])
+        except (TypeError, ValueError):
+            continue
         if start_date and current_date < start_date:
             continue
         if end_date and current_date > end_date:
@@ -332,7 +357,7 @@ def _parse_bls_observations(
             Observation(
                 series_id=definition.id,
                 date=current_date,
-                value=float(item["value"]),
+                value=value,
                 status="final",
             )
         )
