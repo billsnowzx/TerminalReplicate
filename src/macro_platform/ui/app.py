@@ -157,6 +157,28 @@ def render_series_data_badge(series_id: str) -> None:
         st.caption(f"{series_id}: source status unavailable")
 
 
+def _state_label(data_state: str) -> str:
+    mapping = {
+        "real": "REAL",
+        "cached_or_demo_fallback": "CACHED/FALLBACK",
+        "demo_fallback": "DEMO FALLBACK",
+        "not_checked": "NOT CHECKED",
+    }
+    return mapping.get(data_state, data_state.upper())
+
+
+def _health_label(status: str, is_stale: bool) -> str:
+    if status == "down":
+        return "DOWN"
+    if status == "degraded":
+        return "DEGRADED"
+    if is_stale:
+        return "STALE"
+    if status == "healthy":
+        return "HEALTHY"
+    return status.upper()
+
+
 def render_v1_workspace() -> None:
     st.subheader("V1 Analyst Workspace")
     st.caption("Prototype-first workspace using real public connectors when available, with cache/demo fallback shown explicitly.")
@@ -165,11 +187,51 @@ def render_v1_workspace() -> None:
     source_summary = workspace["source_summary"]
     if not isinstance(source_summary, dict):
         source_summary = {}
+    sources_for_metrics = workspace.get("sources", [])
+    if not isinstance(sources_for_metrics, list):
+        sources_for_metrics = []
+    problem_source_count = sum(
+        1
+        for item in sources_for_metrics
+        if isinstance(item, dict) and str(item.get("status")) in {"degraded", "down"}
+    )
     summary_cols = st.columns(4)
     summary_cols[0].metric("Real sources", int(source_summary.get("real", 0)))
     summary_cols[1].metric("Fallback sources", int(source_summary.get("cached_or_demo_fallback", 0)) + int(source_summary.get("demo_fallback", 0)))
     summary_cols[2].metric("Not checked", int(source_summary.get("not_checked", 0)))
-    summary_cols[3].metric("Problem sources", int(source_summary.get("degraded", 0)) + int(source_summary.get("down", 0)))
+    summary_cols[3].metric("Problem sources", int(problem_source_count))
+
+    latest_history_rows = workspace.get("macro_brief_history", [])
+    if isinstance(latest_history_rows, list) and latest_history_rows:
+        latest = latest_history_rows[0]
+        if isinstance(latest, dict):
+            st.caption(
+                "Latest V1 Macro Brief: "
+                f"{latest.get('name', latest.get('id', 'n/a'))} | "
+                f"{latest.get('generated_at', 'n/a')}"
+            )
+
+    action_col_1, action_col_2, action_col_3, action_col_4 = st.columns(4)
+    with action_col_1:
+        if st.button("Refresh Workspace", key="v1_workspace_refresh_btn", use_container_width=True):
+            service.refresh_v1_workspace(run_macro_brief_job=False)
+            st.success("Workspace refreshed.")
+            st.rerun()
+    with action_col_2:
+        if st.button("Generate Brief (Quick)", type="primary", key="v1_brief_quick_btn", use_container_width=True):
+            service.generate_v1_macro_brief(export_formats=["markdown", "xlsx"])
+            st.success("Generated quick V1 Macro Brief (markdown + xlsx).")
+            st.rerun()
+    with action_col_3:
+        if st.button("Generate Brief (Full)", key="v1_brief_full_btn", use_container_width=True):
+            service.generate_v1_macro_brief(export_formats=EXPECTED_BRIEF_EXPORT_FORMATS)
+            st.success("Generated full V1 Macro Brief (all export formats).")
+            st.rerun()
+    with action_col_4:
+        if st.button("Run Brief Job Now", key="v1_brief_run_job_btn", use_container_width=True):
+            service.run_v1_macro_brief_job()
+            st.success("V1 Macro Brief job completed.")
+            st.rerun()
 
     left, right = st.columns([2, 1])
     with left:
@@ -200,8 +262,20 @@ def render_v1_workspace() -> None:
     st.markdown("### Connector Status")
     sources = pd.DataFrame(workspace["sources"])
     if not sources.empty:
+        if "data_state" in sources.columns:
+            sources["state_label"] = sources["data_state"].astype(str).map(_state_label)
+        if "status" in sources.columns:
+            sources["health_label"] = [
+                _health_label(str(status), bool(is_stale))
+                for status, is_stale in zip(
+                    sources["status"].tolist(),
+                    sources["is_stale"].tolist() if "is_stale" in sources.columns else [False] * len(sources),
+                )
+            ]
         columns = [
             "source_id",
+            "state_label",
+            "health_label",
             "provider",
             "status",
             "data_state",
@@ -214,10 +288,6 @@ def render_v1_workspace() -> None:
         st.dataframe(sources[[column for column in columns if column in sources.columns]], use_container_width=True, hide_index=True)
 
     st.markdown("### Research Output")
-    if st.button("Refresh Workspace Data", key="v1_workspace_refresh_btn"):
-        refreshed = service.refresh_v1_workspace(run_macro_brief_job=False)
-        st.success(f"Workspace refreshed at {refreshed['refreshed_at']}")
-
     job_summary = workspace.get("macro_brief_job", {})
     if isinstance(job_summary, dict):
         job_cols = st.columns(4)
@@ -231,22 +301,18 @@ def render_v1_workspace() -> None:
             f"Last run at: {job_summary.get('last_run_at') or 'n/a'}"
         )
 
-    if st.button("Generate V1 Macro Brief", type="primary"):
-        snapshot = service.generate_v1_macro_brief()
-        st.success(f"Generated {snapshot.name}")
-        st.json(snapshot.export_paths)
-
-    controls_left, controls_right = st.columns(2)
-    with controls_left:
-        if st.button("Bootstrap Daily Macro Brief Job"):
-            job = service.bootstrap_v1_macro_brief_job()
-            st.success(f"Ready: {job.name} ({job.id})")
-            st.json(job.model_dump(mode="json"))
-    with controls_right:
-        if st.button("Run Macro Brief Job Now"):
-            job = service.run_v1_macro_brief_job()
-            st.success(f"Job run completed: {job.id}")
-            st.json(job.model_dump(mode="json"))
+    with st.expander("Advanced Job Controls", expanded=False):
+        controls_left, controls_right = st.columns(2)
+        with controls_left:
+            if st.button("Bootstrap Daily Macro Brief Job", key="v1_bootstrap_job_btn"):
+                job = service.bootstrap_v1_macro_brief_job()
+                st.success(f"Ready: {job.name} ({job.id})")
+                st.json(job.model_dump(mode="json"))
+        with controls_right:
+            if st.button("Run Macro Brief Job (Advanced)", key="v1_run_job_advanced_btn"):
+                job = service.run_v1_macro_brief_job()
+                st.success(f"Job run completed: {job.id}")
+                st.json(job.model_dump(mode="json"))
 
     st.markdown("### Macro Brief History")
     history_rows = workspace.get("macro_brief_history", [])
@@ -338,27 +404,29 @@ def render_v1_workspace() -> None:
 
 
 st.title("Modular Macro Research Platform")
-view = st.sidebar.selectbox(
-    "Workspace",
-    [
-        "V1 Workspace",
-        "Global Macro Monitor",
-        "Cross Asset Monitor",
-        "Regime Monitor",
-        "Cross Country Comparison",
-        "Country Dashboard",
-        "Report Studio",
-        "Release Calendar",
-        "Data Quality",
-        "Screening Lab",
-        "Research Library",
-        "Portfolio Lab",
-        "Change Monitor",
-        "Alert Center",
-        "Notification Center",
-        "Ops Incidents",
-    ],
-)
+primary_views = [
+    "V1 Workspace",
+    "Global Macro Monitor",
+    "Cross Asset Monitor",
+    "Regime Monitor",
+    "Cross Country Comparison",
+    "Country Dashboard",
+    "Screening Lab",
+    "Report Studio",
+    "Research Library",
+    "Portfolio Lab",
+]
+secondary_views = [
+    "Release Calendar",
+    "Data Quality",
+    "Change Monitor",
+    "Alert Center",
+    "Notification Center",
+    "Ops Incidents",
+]
+nav_mode = st.sidebar.radio("Navigation", ["Prototype Views", "Operations/Admin"], index=0)
+view_options = primary_views if nav_mode == "Prototype Views" else secondary_views
+view = st.sidebar.selectbox("Workspace", view_options)
 render_source_alert_banner()
 render_workspace_freshness_badge(view)
 
