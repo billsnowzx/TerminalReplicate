@@ -114,6 +114,85 @@ class NotificationDeliveryRecord(Base):
     payload: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class NotificationRoutingAuditRecord(Base):
+    __tablename__ = "notification_routing_audits"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    channel_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class OpsIncidentRecord(Base):
+    __tablename__ = "ops_incidents"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    source_channel_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SourceHealthRecord(Base):
+    __tablename__ = "source_health"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SourceHealthPolicyRecord(Base):
+    __tablename__ = "source_health_policies"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    active: Mapped[str] = mapped_column(String(8), nullable=False, default="true", index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SourceHealthPolicyRunRecord(Base):
+    __tablename__ = "source_health_policy_runs"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SourceHealthPolicyVersionRecord(Base):
+    __tablename__ = "source_health_policy_versions"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    policy_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    version_number: Mapped[int] = mapped_column(nullable=False, index=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SourceHealthPolicyVersionPresetRecord(Base):
+    __tablename__ = "source_health_policy_version_presets"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    policy_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class NotificationDigestRecord(Base):
+    __tablename__ = "notification_digests"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    channel_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class WatchlistRecord(Base):
     __tablename__ = "watchlists"
 
@@ -125,6 +204,15 @@ class WatchlistRecord(Base):
 
 class SavedScreenRecord(Base):
     __tablename__ = "saved_screens"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="shared")
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class CrossCountryPresetRecord(Base):
+    __tablename__ = "cross_country_presets"
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -188,4 +276,14 @@ class ReportJobRunRecord(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     trigger: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ReleaseFreshnessSnapshotRecord(Base):
+    __tablename__ = "release_freshness_snapshots"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    country: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    topic: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     payload: Mapped[str] = mapped_column(Text, nullable=False)

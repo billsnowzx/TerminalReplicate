@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+import json
+import os
+from datetime import date, datetime, timedelta
+from pathlib import Path
+import subprocess
 from uuid import uuid4
 
 import pandas as pd
@@ -9,6 +13,8 @@ import streamlit as st
 
 from macro_platform.domain.models import (
     ChangeAlertRule,
+    CrossCountryPresetImportRequest,
+    CrossCountryPreset,
     ModelPortfolio,
     NotificationChannel,
     ObservationQuery,
@@ -21,18 +27,70 @@ from macro_platform.domain.models import (
     ScenarioShock,
     ScreenFilter,
     ScreenSpec,
+    SourceHealthPolicy,
+    SourceHealthPolicyVersionPresetImportRequest,
+    SourceHealthPolicyVersionPreset,
     Watchlist,
 )
 from macro_platform.services.platform import PlatformService
 
 st.set_page_config(page_title="Macro Platform", layout="wide")
 service = PlatformService()
+EXPECTED_BRIEF_EXPORT_FORMATS = ["markdown", "xlsx", "json", "csv_zip", "pptx"]
+
+
+def _open_export_folder(path_text: str) -> tuple[bool, str]:
+    try:
+        target = Path(path_text)
+        if not target.exists():
+            return False, f"Path does not exist: {target}"
+        folder = target if target.is_dir() else target.parent
+        if hasattr(os, "startfile"):
+            os.startfile(str(folder))  # type: ignore[attr-defined]
+            return True, f"Opened folder: {folder}"
+        subprocess.Popen(["xdg-open", str(folder)])  # noqa: S603,S607
+        return True, f"Opened folder: {folder}"
+    except Exception as exc:
+        return False, f"Failed to open folder: {exc}"
+
+
+def _build_brief_history_view_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    decorated: list[dict[str, object]] = []
+    now = datetime.now()
+    expected = set(EXPECTED_BRIEF_EXPORT_FORMATS)
+    for row in rows:
+        exports = row.get("export_paths") if isinstance(row.get("export_paths"), dict) else {}
+        if not isinstance(exports, dict):
+            exports = {}
+        available = sorted(str(item) for item in exports.keys())
+        missing = sorted(expected.difference(available))
+        generated_at_raw = row.get("generated_at")
+        generated_at = pd.to_datetime(generated_at_raw, errors="coerce")
+        age_hours = None
+        if pd.notna(generated_at):
+            age_hours = round((now - generated_at.to_pydatetime()).total_seconds() / 3600, 1)
+        decorated.append(
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "generated_at": generated_at_raw,
+                "age_hours": age_hours,
+                "coverage": f"{len(available)}/{len(expected)}",
+                "coverage_status": "complete" if not missing else "partial",
+                "available_formats": ", ".join(available) if available else "none",
+                "missing_formats": ", ".join(missing) if missing else "none",
+                "summary": row.get("summary"),
+                "export_paths": exports,
+            }
+        )
+    return decorated
 
 
 def render_timeseries(series_id: str, title: str) -> None:
     observations = service.query_observations(
         ObservationQuery(series_id=series_id, start_date=date.today() - timedelta(days=365 * 5))
     )
+    render_series_data_badge(series_id)
     frame = pd.DataFrame([item.model_dump(mode="json") for item in observations])
     if frame.empty:
         st.warning(f"No data available for {series_id}")
@@ -42,28 +100,462 @@ def render_timeseries(series_id: str, title: str) -> None:
     st.plotly_chart(figure, use_container_width=True)
 
 
-st.title("Modular Macro Research Platform")
-view = st.sidebar.selectbox(
-    "Workspace",
-    [
-        "Global Macro Monitor",
-        "Country Dashboard",
-        "Cross Asset Monitor",
-        "Regime Monitor",
-        "Release Calendar",
-        "Change Monitor",
-        "Alert Center",
-        "Notification Center",
-        "Screening Lab",
-        "Research Library",
-        "Portfolio Lab",
-        "Report Studio",
-    ],
-)
+def render_source_alert_banner(limit: int = 5) -> None:
+    alerts = service.get_source_health_alerts(limit=limit)
+    if not alerts:
+        return
+    high_count = sum(1 for item in alerts if item["severity"] == "high")
+    medium_count = sum(1 for item in alerts if item["severity"] == "medium")
+    low_count = sum(1 for item in alerts if item["severity"] == "low")
+    st.warning(
+        "Source health alerts active: "
+        f"{high_count} high, {medium_count} medium, {low_count} low."
+    )
+    with st.expander("Source alert details", expanded=False):
+        st.dataframe(pd.DataFrame(alerts), use_container_width=True)
 
-if view == "Global Macro Monitor":
+
+def render_workspace_freshness_badge(workspace: str, alert_limit: int = 200) -> None:
+    alerts = service.get_source_health_alerts(limit=alert_limit)
+    if not alerts:
+        st.caption(f"{workspace}: data freshness status is healthy (no active source alerts).")
+        return
+    high_count = sum(1 for item in alerts if item["severity"] == "high")
+    medium_count = sum(1 for item in alerts if item["severity"] == "medium")
+    low_count = sum(1 for item in alerts if item["severity"] == "low")
+    impacted_sources = ", ".join(sorted({str(item["source_id"]) for item in alerts[:5]}))
+    message = (
+        f"{workspace}: freshness risk detected. "
+        f"{high_count} high / {medium_count} medium / {low_count} low alerts. "
+        f"Impacted sources: {impacted_sources or 'n/a'}."
+    )
+    if high_count > 0:
+        st.error(message)
+    elif medium_count > 0:
+        st.warning(message)
+    else:
+        st.info(message)
+
+
+def render_data_state_badge(label: str, status: dict[str, object]) -> None:
+    data_state = str(status.get("data_state", "not_checked"))
+    provider = str(status.get("provider", "unknown"))
+    checked_at = status.get("last_checked_at") or "not checked"
+    message = f"{label}: {data_state} via {provider}; last checked {checked_at}"
+    if data_state == "real":
+        st.caption(message)
+    elif data_state in {"cached_or_demo_fallback", "demo_fallback"}:
+        st.warning(message)
+    else:
+        st.info(message)
+
+
+def render_series_data_badge(series_id: str) -> None:
+    try:
+        render_data_state_badge(series_id, service.get_series_data_status(series_id))
+    except KeyError:
+        st.caption(f"{series_id}: source status unavailable")
+
+
+def _state_label(data_state: str) -> str:
+    mapping = {
+        "real": "REAL",
+        "cached_or_demo_fallback": "CACHED/FALLBACK",
+        "demo_fallback": "DEMO FALLBACK",
+        "not_checked": "NOT CHECKED",
+    }
+    return mapping.get(data_state, data_state.upper())
+
+
+def _health_label(status: str, is_stale: bool) -> str:
+    if status == "down":
+        return "DOWN"
+    if status == "degraded":
+        return "DEGRADED"
+    if is_stale:
+        return "STALE"
+    if status == "healthy":
+        return "HEALTHY"
+    return status.upper()
+
+
+def _brief_export_caption(export_paths: dict[str, object]) -> str:
+    if not export_paths:
+        return "No exports available"
+    ordered = [item for item in EXPECTED_BRIEF_EXPORT_FORMATS if item in export_paths]
+    extras = sorted(str(item) for item in export_paths.keys() if item not in EXPECTED_BRIEF_EXPORT_FORMATS)
+    return ", ".join(ordered + extras)
+
+
+def render_v1_analyst_brief_card(workspace: dict[str, object]) -> bool:
+    readiness = workspace.get("demo_readiness", {})
+    if not isinstance(readiness, dict):
+        readiness = {}
+    status = str(readiness.get("status", "unknown"))
+    can_generate = bool(readiness.get("can_generate_brief", False))
+    blockers = readiness.get("blockers", [])
+    warnings = readiness.get("warnings", [])
+    latest_brief = readiness.get("latest_brief")
+    latest_export_paths = readiness.get("latest_export_paths", {})
+    if not isinstance(blockers, list):
+        blockers = []
+    if not isinstance(warnings, list):
+        warnings = []
+    if not isinstance(latest_brief, dict):
+        latest_brief = None
+    if not isinstance(latest_export_paths, dict):
+        latest_export_paths = {}
+
+    st.markdown("### Analyst Brief")
+    top_left, top_mid, top_right = st.columns([1, 1, 2])
+    top_left.metric("Demo Status", status.upper())
+    top_mid.metric("Open Issues", len(blockers) + len(warnings))
+    latest_name = latest_brief.get("name") if latest_brief else "No brief generated"
+    latest_time = latest_brief.get("generated_at") if latest_brief else "n/a"
+    top_right.caption(f"Latest brief: {latest_name}")
+    top_right.caption(f"Generated: {latest_time}")
+    top_right.caption(f"Exports: {_brief_export_caption(latest_export_paths)}")
+
+    if blockers:
+        st.error("Demo blockers: " + " | ".join(str(item) for item in blockers[:4]))
+    elif warnings:
+        st.warning("Demo warnings: " + " | ".join(str(item) for item in warnings[:4]))
+    else:
+        st.success("Demo readiness is green for the V1 prototype workflow.")
+
+    if latest_export_paths:
+        export_frame = pd.DataFrame(
+            [
+                {"format": str(export_format), "path": str(path)}
+                for export_format, path in sorted(latest_export_paths.items())
+            ]
+        )
+        st.dataframe(export_frame, use_container_width=True, hide_index=True)
+
+    return can_generate
+
+
+def render_v1_research_shortcuts(workspace: dict[str, object]) -> None:
+    defaults = workspace.get("research_defaults", {})
+    if not isinstance(defaults, dict):
+        defaults = {}
+    preset = defaults.get("cross_country_preset")
+    screen = defaults.get("screen")
+    if not isinstance(preset, dict):
+        preset = None
+    if not isinstance(screen, dict):
+        screen = None
+
+    st.markdown("### Research Shortcuts")
+    shortcut_left, shortcut_mid, shortcut_right = st.columns([1, 1, 1])
+    with shortcut_left:
+        st.metric("Defaults", "Ready" if bool(defaults.get("is_bootstrapped")) else "Missing")
+        if st.button("Bootstrap V1 Defaults", key="v1_bootstrap_research_defaults", use_container_width=True):
+            service.bootstrap_v1_research_defaults()
+            st.success("V1 research defaults are ready.")
+            st.rerun()
+    with shortcut_mid:
+        st.caption("Cross-country preset")
+        if preset is None:
+            st.info("No V1 default preset yet.")
+        else:
+            st.write(str(preset.get("name", "V1 preset")))
+            st.caption("Countries: " + ", ".join(str(item) for item in preset.get("countries", [])))
+    with shortcut_right:
+        st.caption("Screening preset")
+        if screen is None:
+            st.info("No V1 saved screen yet.")
+        else:
+            st.write(str(screen.get("name", "V1 screen")))
+            spec = screen.get("spec", {})
+            universe = spec.get("universe", []) if isinstance(spec, dict) else []
+            st.caption(f"Universe: {len(universe)} assets")
+
+    if preset is not None:
+        with st.expander("Preview Default Cross-Country Rows", expanded=False):
+            if st.button("Run Cross-Country Preview", key="v1_cross_country_default_preview"):
+                rows = service.get_cross_country_comparison(
+                    countries=[str(item) for item in preset.get("countries", [])],
+                    limit=6,
+                    factor_weights=preset.get("factor_weights") if isinstance(preset.get("factor_weights"), dict) else None,
+                )
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    if screen is not None:
+        with st.expander("Preview Default Screen Results", expanded=False):
+            if st.button("Run Screen Preview", key="v1_screen_default_preview"):
+                try:
+                    saved = service.get_saved_screen(str(screen["id"]))
+                    rows = service.run_screen(saved.spec)
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                except KeyError:
+                    st.warning("Saved screen is no longer available.")
+
+
+def render_v1_workspace() -> None:
+    st.subheader("V1 Analyst Workspace")
+    st.caption("Prototype-first workspace using real public connectors when available, with cache/demo fallback shown explicitly.")
+    workspace = service.get_v1_workspace()
+
+    source_summary = workspace["source_summary"]
+    if not isinstance(source_summary, dict):
+        source_summary = {}
+    sources_for_metrics = workspace.get("sources", [])
+    if not isinstance(sources_for_metrics, list):
+        sources_for_metrics = []
+    problem_source_count = sum(
+        1
+        for item in sources_for_metrics
+        if isinstance(item, dict) and str(item.get("status")) in {"degraded", "down"}
+    )
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Real sources", int(source_summary.get("real", 0)))
+    summary_cols[1].metric("Fallback sources", int(source_summary.get("cached_or_demo_fallback", 0)) + int(source_summary.get("demo_fallback", 0)))
+    summary_cols[2].metric("Not checked", int(source_summary.get("not_checked", 0)))
+    summary_cols[3].metric("Problem sources", int(problem_source_count))
+
+    can_generate_brief = render_v1_analyst_brief_card(workspace)
+    render_v1_research_shortcuts(workspace)
+
+    action_col_1, action_col_2, action_col_3, action_col_4 = st.columns(4)
+    with action_col_1:
+        if st.button("Refresh Workspace", key="v1_workspace_refresh_btn", use_container_width=True):
+            service.refresh_v1_workspace(run_macro_brief_job=False)
+            st.success("Workspace refreshed.")
+            st.rerun()
+    with action_col_2:
+        if st.button(
+            "Generate Brief (Quick)",
+            type="primary",
+            key="v1_brief_quick_btn",
+            use_container_width=True,
+            disabled=not can_generate_brief,
+        ):
+            service.generate_v1_macro_brief(export_formats=["markdown", "xlsx"])
+            st.success("Generated quick V1 Macro Brief (markdown + xlsx).")
+            st.rerun()
+    with action_col_3:
+        if st.button(
+            "Generate Brief (Full)",
+            key="v1_brief_full_btn",
+            use_container_width=True,
+            disabled=not can_generate_brief,
+        ):
+            service.generate_v1_macro_brief(export_formats=EXPECTED_BRIEF_EXPORT_FORMATS)
+            st.success("Generated full V1 Macro Brief (all export formats).")
+            st.rerun()
+    with action_col_4:
+        if st.button("Run Brief Job Now", key="v1_brief_run_job_btn", use_container_width=True):
+            service.run_v1_macro_brief_job()
+            st.success("V1 Macro Brief job completed.")
+            st.rerun()
+
+    left, right = st.columns([2, 1])
+    with left:
+        st.markdown("### Macro Snapshot")
+        macro = pd.DataFrame(workspace["macro"])
+        if not macro.empty and "data_state" in macro.columns:
+            macro_problem = macro[macro["data_state"] != "real"]
+            if not macro_problem.empty:
+                st.warning(f"Macro snapshot includes {len(macro_problem)} fallback/problem rows.")
+        st.dataframe(macro, use_container_width=True, hide_index=True)
+    with right:
+        st.markdown("### Regime")
+        regime = workspace["regime"]
+        if isinstance(regime, dict):
+            st.metric("Current Regime", str(regime.get("regime", "unknown")).title())
+            st.metric("Inflation YoY", regime.get("inflation_yoy"))
+            st.metric("Yield Curve Slope", regime.get("yield_curve_slope"))
+
+    st.markdown("### Cross-Asset Snapshot")
+    cross_asset = pd.DataFrame(workspace["cross_asset"])
+    if not cross_asset.empty and "data_state" in cross_asset.columns:
+        cross_problem = cross_asset[cross_asset["data_state"] != "real"]
+        if not cross_problem.empty:
+            st.warning(f"Cross-asset snapshot includes {len(cross_problem)} fallback/problem rows.")
+    st.dataframe(cross_asset, use_container_width=True, hide_index=True)
+    render_data_state_badge("Market prices", service.get_market_data_status())
+
+    st.markdown("### Connector Status")
+    sources = pd.DataFrame(workspace["sources"])
+    if not sources.empty:
+        if "data_state" in sources.columns:
+            sources["state_label"] = sources["data_state"].astype(str).map(_state_label)
+        if "status" in sources.columns:
+            sources["health_label"] = [
+                _health_label(str(status), bool(is_stale))
+                for status, is_stale in zip(
+                    sources["status"].tolist(),
+                    sources["is_stale"].tolist() if "is_stale" in sources.columns else [False] * len(sources),
+                )
+            ]
+        columns = [
+            "source_id",
+            "state_label",
+            "health_label",
+            "provider",
+            "status",
+            "data_state",
+            "fallback_used",
+            "is_stale",
+            "last_checked_at",
+            "last_error",
+            "notes",
+        ]
+        st.dataframe(sources[[column for column in columns if column in sources.columns]], use_container_width=True, hide_index=True)
+
+    st.markdown("### Research Output")
+    job_summary = workspace.get("macro_brief_job", {})
+    if isinstance(job_summary, dict):
+        job_cols = st.columns(4)
+        job_cols[0].metric("Brief Job Status", str(job_summary.get("status", "unknown")).title())
+        job_cols[1].metric("Cadence", str(job_summary.get("cadence", "n/a")).title())
+        job_cols[2].metric("Last Run", str(job_summary.get("last_run_status", "n/a")).title())
+        job_cols[3].metric("Failure Streak", int(job_summary.get("consecutive_failures", 0)))
+        st.caption(
+            "Next run: "
+            f"{job_summary.get('next_run_at') or 'n/a'} | "
+            f"Last run at: {job_summary.get('last_run_at') or 'n/a'}"
+        )
+
+    with st.expander("Advanced Job Controls", expanded=False):
+        controls_left, controls_right = st.columns(2)
+        with controls_left:
+            if st.button("Bootstrap Daily Macro Brief Job", key="v1_bootstrap_job_btn"):
+                job = service.bootstrap_v1_macro_brief_job()
+                st.success(f"Ready: {job.name} ({job.id})")
+                st.json(job.model_dump(mode="json"))
+        with controls_right:
+            if st.button("Run Macro Brief Job (Advanced)", key="v1_run_job_advanced_btn"):
+                job = service.run_v1_macro_brief_job()
+                st.success(f"Job run completed: {job.id}")
+                st.json(job.model_dump(mode="json"))
+
+    st.markdown("### Macro Brief History")
+    history_rows = workspace.get("macro_brief_history", [])
+    decorated_rows = _build_brief_history_view_rows([item for item in history_rows if isinstance(item, dict)])
+    brief_history = pd.DataFrame(decorated_rows)
+    if not brief_history.empty:
+        st.dataframe(
+            brief_history[
+                [
+                    "id",
+                    "name",
+                    "generated_at",
+                    "age_hours",
+                    "coverage",
+                    "coverage_status",
+                    "available_formats",
+                    "missing_formats",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+        lookup = {item["id"]: item for item in history_rows if isinstance(item, dict) and "id" in item}
+        selected_snapshot_id = st.selectbox(
+            "Selected brief snapshot",
+            options=list(lookup.keys()),
+            format_func=lambda item_id: f"{lookup[item_id].get('name', item_id)} ({item_id})",
+            key="v1_brief_selected_snapshot",
+        )
+        selected = lookup[selected_snapshot_id]
+        selected_row = next((item for item in decorated_rows if item.get("id") == selected_snapshot_id), None)
+        st.caption(f"Summary: {selected.get('summary', 'n/a')}")
+        if selected_row is not None:
+            st.caption(
+                "Coverage: "
+                f"{selected_row['coverage']} ({selected_row['coverage_status']}) | "
+                f"Missing: {selected_row['missing_formats']}"
+            )
+        st.json(selected.get("export_paths", {}))
+        action_left, action_mid, action_right, action_more = st.columns(4)
+        with action_left:
+            selected_export_format = st.selectbox(
+                "Re-export format",
+                ["markdown", "json", "csv_zip", "xlsx", "pptx"],
+                index=3,
+                key="v1_brief_reexport_format",
+            )
+            if st.button("Re-export Selected Brief", key="v1_brief_reexport_btn"):
+                refreshed = service.export_report_snapshot(selected_snapshot_id, selected_export_format)
+                st.success(f"Re-export complete ({selected_export_format}): {refreshed.id}")
+                st.json(refreshed.export_paths)
+        with action_mid:
+            missing_formats = []
+            if selected_row is not None and selected_row.get("missing_formats") != "none":
+                missing_formats = [item.strip() for item in str(selected_row["missing_formats"]).split(",") if item.strip()]
+            if st.button(
+                "Generate Missing Formats",
+                key="v1_brief_complete_exports_btn",
+                disabled=not missing_formats,
+            ):
+                refreshed = service.complete_v1_macro_brief_snapshot_exports(selected_snapshot_id)
+                st.success(f"Generated missing formats: {', '.join(missing_formats)}")
+                st.json(refreshed.export_paths)
+        with action_right:
+            if st.button("Run Job Again", key="v1_brief_run_job_again_btn"):
+                job = service.run_v1_macro_brief_job()
+                st.success(f"Job run completed: {job.id}")
+                st.json(job.model_dump(mode="json"))
+        with action_more:
+            if st.button("Open Export Folder", key="v1_brief_open_folder_btn"):
+                current = service.get_report_snapshot(selected_snapshot_id)
+                export_paths = list(current.export_paths.values())
+                candidate = export_paths[0] if export_paths else current.output_path
+                if candidate:
+                    ok, message = _open_export_folder(str(candidate))
+                    if ok:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                else:
+                    st.warning("No export path is available for this snapshot.")
+    else:
+        st.caption("No V1 Macro Brief snapshots yet.")
+
+    st.markdown("### Latest Reports")
+    reports = pd.DataFrame(workspace.get("latest_reports", []))
+    if not reports.empty:
+        st.dataframe(reports[["id", "name", "generated_at", "summary", "export_paths"]], use_container_width=True, hide_index=True)
+
+
+st.title("Modular Macro Research Platform")
+primary_views = [
+    "V1 Workspace",
+    "Global Macro Monitor",
+    "Cross Asset Monitor",
+    "Regime Monitor",
+    "Cross Country Comparison",
+    "Country Dashboard",
+    "Screening Lab",
+    "Report Studio",
+    "Research Library",
+    "Portfolio Lab",
+]
+secondary_views = [
+    "Release Calendar",
+    "Data Quality",
+    "Change Monitor",
+    "Alert Center",
+    "Notification Center",
+    "Ops Incidents",
+]
+nav_mode = st.sidebar.radio("Navigation", ["Prototype Views", "Operations/Admin"], index=0)
+view_options = primary_views if nav_mode == "Prototype Views" else secondary_views
+view = st.sidebar.selectbox("Workspace", view_options)
+render_source_alert_banner()
+render_workspace_freshness_badge(view)
+
+if view == "V1 Workspace":
+    render_v1_workspace()
+
+elif view == "Global Macro Monitor":
     st.subheader("Global Macro Monitor")
     monitor = pd.DataFrame(service.get_global_macro_monitor())
+    if not monitor.empty and "data_state" in monitor.columns:
+        flagged = monitor[monitor["data_state"] != "real"]
+        if not flagged.empty:
+            st.warning(f"Global macro monitor includes {len(flagged)} fallback/problem rows.")
     st.dataframe(monitor, use_container_width=True)
     left, right = st.columns(2)
     with left:
@@ -86,9 +578,211 @@ elif view == "Country Dashboard":
     }
     render_timeseries(series_map[country], f"{country} GDP")
 
+elif view == "Cross Country Comparison":
+    st.subheader("Cross Country Comparison")
+    default_countries = ["US", "CN", "EA", "JP", "GB", "CA"]
+    preset_scope = st.selectbox("Preset scope", ["all", "shared", "private"], index=0, key="cross_country_preset_scope")
+    presets = service.list_cross_country_presets(owner_scope=preset_scope)
+    default_preset = service.get_default_cross_country_preset(owner_scope=preset_scope)
+    preset_index = 0
+    if default_preset is not None:
+        preset_ids = [item.id for item in presets]
+        if default_preset.id in preset_ids:
+            preset_index = preset_ids.index(default_preset.id) + 1
+    selected_preset_id = st.selectbox(
+        "Preset",
+        ["custom"] + [item.id for item in presets],
+        index=preset_index,
+        format_func=lambda x: (
+            "Custom"
+            if x == "custom"
+            else next(
+                f"{item.name}{' (Default)' if item.is_default else ''}"
+                for item in presets
+                if item.id == x
+            )
+        ),
+    )
+    active_preset = None if selected_preset_id == "custom" else next(item for item in presets if item.id == selected_preset_id)
+    preset_state_key = selected_preset_id if selected_preset_id != "custom" else "custom"
+    selected_countries = st.multiselect(
+        "Countries",
+        options=default_countries,
+        default=default_countries if active_preset is None else active_preset.countries,
+        key=f"cross_country_countries_{preset_state_key}",
+    )
+    st.caption("Factor weights")
+    weight_growth = st.slider(
+        "Growth",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("growth", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_growth_{preset_state_key}",
+    )
+    weight_inflation = st.slider(
+        "Inflation (lower is better)",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("inflation", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_inflation_{preset_state_key}",
+    )
+    weight_labor = st.slider(
+        "Labor Unemployment (lower is better)",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("labor_unemployment", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_labor_{preset_state_key}",
+    )
+    weight_policy = st.slider(
+        "Policy Rate (lower is better)",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("policy_rate", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_policy_{preset_state_key}",
+    )
+    weight_equity = st.slider(
+        "Equity Return 63D",
+        min_value=0.0,
+        max_value=3.0,
+        value=float((active_preset.factor_weights.get("equity_return_63d", 1.0) if active_preset else 1.0)),
+        step=0.1,
+        key=f"cross_country_weight_equity_{preset_state_key}",
+    )
+    weights = {
+        "growth": weight_growth,
+        "inflation": weight_inflation,
+        "labor_unemployment": weight_labor,
+        "policy_rate": weight_policy,
+        "equity_return_63d": weight_equity,
+    }
+    comparison_limit = st.slider("Rows", min_value=3, max_value=20, value=6, step=1)
+    preset_name = st.text_input(
+        "Preset name",
+        value="" if active_preset is None else active_preset.name,
+        key=f"cross_country_preset_name_{preset_state_key}",
+    )
+    preset_notes = st.text_area(
+        "Preset notes",
+        value="" if active_preset is None or active_preset.notes is None else active_preset.notes,
+        key=f"cross_country_preset_notes_{preset_state_key}",
+    )
+    if active_preset is None:
+        if st.button("Create preset") and preset_name.strip():
+            preset = CrossCountryPreset(
+                id=f"cross-country-preset-{uuid4().hex[:8]}",
+                name=preset_name.strip(),
+                countries=selected_countries or default_countries,
+                factor_weights=weights,
+                owner_scope="shared",
+                notes=preset_notes or None,
+                is_default=(default_preset is None),
+            )
+            service.save_cross_country_preset(preset, allow_shared_mutation=True)
+            st.success(f"Saved preset: {preset.name}")
+            st.rerun()
+    else:
+        action_left, action_mid, action_right = st.columns(3)
+        with action_left:
+            if st.button("Update preset"):
+                updated = active_preset.model_copy(
+                    update={
+                        "name": preset_name.strip() or active_preset.name,
+                        "countries": selected_countries or default_countries,
+                        "factor_weights": weights,
+                        "notes": preset_notes or None,
+                    }
+                )
+                service.save_cross_country_preset(updated, allow_shared_mutation=True)
+                st.success(f"Updated preset: {updated.name}")
+                st.rerun()
+        with action_mid:
+            if st.button("Set as default") and not active_preset.is_default:
+                service.set_default_cross_country_preset(active_preset.id, allow_shared_mutation=True)
+                st.success(f"Set default preset: {active_preset.name}")
+                st.rerun()
+        with action_right:
+            if st.button("Delete preset"):
+                service.delete_cross_country_preset(active_preset.id, allow_shared_mutation=True)
+                st.success(f"Deleted preset: {active_preset.name}")
+                st.rerun()
+    if presets:
+        st.caption("Saved presets")
+        st.dataframe(pd.DataFrame([item.model_dump(mode="json") for item in presets]), use_container_width=True)
+    with st.expander("Preset Import / Export", expanded=False):
+        bundle = service.export_cross_country_presets(limit=500)
+        bundle_json = json.dumps(bundle.model_dump(mode="json"), indent=2, default=str)
+        st.download_button(
+            "Download presets JSON",
+            data=bundle_json,
+            file_name="cross-country-presets.json",
+            mime="application/json",
+        )
+        import_mode = st.selectbox("Import mode", ["append", "replace", "upsert"], key="cross_country_import_mode")
+        import_payload = st.text_area("Import JSON payload", value="", key="cross_country_import_payload")
+        import_request = None
+        parse_error = None
+        if import_payload.strip():
+            try:
+                payload = json.loads(import_payload)
+                presets_payload = payload.get("presets", payload)
+                import_request = CrossCountryPresetImportRequest(mode=import_mode, presets=presets_payload)
+            except Exception as exc:  # noqa: BLE001
+                parse_error = str(exc)
+        if parse_error:
+            st.error(f"Invalid JSON payload: {parse_error}")
+        if st.button("Preview import", key="cross_country_preview_import"):
+            if import_request is None:
+                st.warning("Paste a valid JSON payload first.")
+            else:
+                preview = service.preview_import_cross_country_presets(import_request)
+                st.session_state["cross_country_import_preview"] = preview
+        preview_state = st.session_state.get("cross_country_import_preview")
+        if preview_state:
+            st.caption("Import preview")
+            st.json(preview_state)
+        if st.button("Run import", key="cross_country_run_import"):
+            if import_request is None:
+                st.warning("Paste a valid JSON payload first.")
+            else:
+                try:
+                    imported = service.import_cross_country_presets(import_request)
+                    st.success(f"Imported {len(imported)} preset(s).")
+                    st.session_state.pop("cross_country_import_preview", None)
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+    rows = pd.DataFrame(
+        service.get_cross_country_comparison(
+            countries=selected_countries,
+            limit=comparison_limit,
+            factor_weights=weights,
+        )
+    )
+    st.dataframe(rows, use_container_width=True)
+    if not rows.empty:
+        scatter = px.scatter(
+            rows,
+            x="growth",
+            y="inflation",
+            color="composite_score",
+            hover_name="country",
+            size="equity_return_63d",
+            title="Growth vs Inflation with Composite Score",
+        )
+        st.plotly_chart(scatter, use_container_width=True)
+
 elif view == "Cross Asset Monitor":
     st.subheader("Cross Asset Monitor")
+    render_data_state_badge("Market prices", service.get_market_data_status())
     monitor = pd.DataFrame(service.get_cross_asset_monitor())
+    if not monitor.empty and "data_state" in monitor.columns:
+        flagged = monitor[monitor["data_state"] != "real"]
+        if not flagged.empty:
+            st.warning(f"Cross-asset monitor includes {len(flagged)} fallback/problem rows.")
     st.dataframe(monitor, use_container_width=True)
     ticker = st.selectbox("Ticker", list(service.market_universe.keys()))
     prices = pd.DataFrame([item.model_dump(mode="json") for item in service.get_prices(ticker)])
@@ -97,12 +791,16 @@ elif view == "Cross Asset Monitor":
 
 elif view == "Regime Monitor":
     st.subheader("Regime Monitor")
-    regime = service.get_regime_snapshot()
+    regime_explain = service.get_regime_explanation()
+    regime = regime_explain["snapshot"]
     cols = st.columns(4)
     cols[0].metric("Inflation YoY", f"{regime['inflation_yoy']}%")
     cols[1].metric("Unemployment", f"{regime['unemployment_rate']}%")
     cols[2].metric("10Y-2Y", f"{regime['yield_curve_slope']} pts")
     cols[3].metric("Current Regime", str(regime["regime"]))
+    rules_frame = pd.DataFrame(regime_explain.get("rules", []))
+    st.caption("Regime rule trace")
+    st.dataframe(rules_frame, use_container_width=True)
     left, right = st.columns(2)
     with left:
         render_timeseries("fred:DGS10", "US 10Y Yield")
@@ -114,8 +812,44 @@ elif view == "Release Calendar":
     country_filter = st.sidebar.selectbox("Country filter", ["All", "US", "EA", "CN", "JP", "GB", "CA"])
     country = None if country_filter == "All" else country_filter
     horizon = st.sidebar.slider("Days ahead", min_value=14, max_value=180, value=60, step=7)
+    alert_horizon = st.sidebar.slider("Alert horizon (days)", min_value=3, max_value=45, value=14, step=1)
     calendar = pd.DataFrame([item.model_dump(mode="json") for item in service.get_release_calendar(country=country, days=horizon)])
     freshness = pd.DataFrame([item.model_dump(mode="json") for item in service.get_freshness_status(country=country)])
+    alerts = pd.DataFrame(service.get_release_alerts(country=country, days=alert_horizon, limit=200))
+    if not alerts.empty:
+        high_alerts = int((alerts["severity"] == "high").sum())
+        medium_alerts = int((alerts["severity"] == "medium").sum())
+        low_alerts = int((alerts["severity"] == "low").sum())
+        st.warning(
+            f"Release alerts: {high_alerts} high, {medium_alerts} medium, {low_alerts} low."
+        )
+    st.caption("Release alerts")
+    st.dataframe(alerts, use_container_width=True)
+    st.caption("Release freshness snapshots")
+    snap_left, snap_right = st.columns(2)
+    with snap_left:
+        if st.button("Capture freshness snapshot"):
+            captured = service.capture_release_freshness_snapshot(country=country, topic=None, days=horizon)
+            st.success(f"Captured snapshot {captured.id} at {captured.captured_at}.")
+    with snap_right:
+        delta = service.get_release_freshness_delta(country=country, topic=None)
+        if delta.get("has_baseline"):
+            st.info(
+                f"Delta vs previous snapshot: {int(delta.get('change_count', 0))} changed series "
+                f"(current={delta.get('current_snapshot_id')}, previous={delta.get('previous_snapshot_id')})."
+            )
+        else:
+            st.caption(str(delta.get("message", "No baseline snapshot yet.")))
+    snapshots = pd.DataFrame(
+        [
+            item.model_dump(mode="json")
+            for item in service.list_release_freshness_snapshots(country=country, topic=None, limit=20)
+        ]
+    )
+    st.dataframe(snapshots, use_container_width=True)
+    delta_changes = pd.DataFrame(delta.get("changes", []))
+    st.caption("Latest snapshot delta")
+    st.dataframe(delta_changes, use_container_width=True)
     left, right = st.columns(2)
     with left:
         st.caption("Expected next releases")
@@ -123,6 +857,866 @@ elif view == "Release Calendar":
     with right:
         st.caption("Freshness status")
         st.dataframe(freshness, use_container_width=True)
+
+elif view == "Data Quality":
+    st.subheader("Data Quality And Source Health")
+    summary = service.get_source_health_summary()
+    metric_total, metric_healthy, metric_degraded, metric_stale = st.columns(4)
+    metric_total.metric("Tracked Sources", summary.get("total", 0))
+    metric_healthy.metric("Healthy", summary.get("healthy", 0))
+    metric_degraded.metric("Degraded", summary.get("degraded", 0) + summary.get("down", 0))
+    metric_stale.metric("Stale", summary.get("stale", 0))
+    kind_filter = st.selectbox("Source kind", ["all", "macro", "market"])
+    status_filter = st.selectbox("Status", ["all", "healthy", "degraded", "down", "unknown"])
+    rows = pd.DataFrame(
+        [
+            item.model_dump(mode="json")
+            for item in service.list_source_health(
+                source_kind=None if kind_filter == "all" else kind_filter,
+                status=None if status_filter == "all" else status_filter,
+                limit=200,
+            )
+        ]
+    )
+    st.dataframe(rows, use_container_width=True)
+    with st.expander("Series Source Registry", expanded=False):
+        registry = pd.DataFrame(service.get_series_source_registry())
+        st.dataframe(registry, use_container_width=True)
+        source_values = sorted(registry["source"].tolist()) if not registry.empty else []
+        if source_values:
+            drill_source = st.selectbox("Drill-down source", source_values, key="registry_drill_source")
+            source_rows = service.list_series_by_source(drill_source, limit=1000)
+            country_values = sorted({item.country for item in source_rows})
+            topic_values = sorted({item.topic for item in source_rows})
+            country_filter = st.selectbox(
+                "Drill-down country",
+                ["all"] + country_values,
+                key="registry_drill_country",
+            )
+            topic_filter = st.selectbox(
+                "Drill-down topic",
+                ["all"] + topic_values,
+                key="registry_drill_topic",
+            )
+            drill_limit = st.slider("Drill-down row limit", min_value=10, max_value=500, value=100, step=10)
+            drilldown = pd.DataFrame(
+                [
+                    item.model_dump(mode="json")
+                    for item in service.list_series_by_source(
+                        source=drill_source,
+                        country=None if country_filter == "all" else country_filter,
+                        topic=None if topic_filter == "all" else topic_filter,
+                        limit=drill_limit,
+                    )
+                ]
+            )
+            st.caption("Series by source")
+            st.dataframe(drilldown, use_container_width=True)
+        else:
+            st.info("No source registry rows available yet.")
+    with st.expander("Normalization QA", expanded=False):
+        qa = service.get_normalization_qa_summary(max_series_scan=1000)
+        qa_metric_1, qa_metric_2, qa_metric_3, qa_metric_4 = st.columns(4)
+        qa_metric_1.metric("Series Total", int(qa.get("series_total", 0)))
+        qa_metric_2.metric("Invalid Frequency", int(qa.get("invalid_frequency_count", 0)))
+        qa_metric_3.metric("Missing Units", int(qa.get("missing_unit_count", 0)))
+        qa_metric_4.metric("Missing Value Ratio", f"{float(qa.get('missing_value_ratio', 0.0)):.2%}")
+        st.caption("Normalization summary")
+        st.json(
+            {
+                "frequency_counts": qa.get("frequency_counts", {}),
+                "country_count": qa.get("country_count", 0),
+                "topic_count": qa.get("topic_count", 0),
+                "revision_row_count": qa.get("revision_row_count", 0),
+                "revision_timezone_aware_count": qa.get("revision_timezone_aware_count", 0),
+                "revision_timezone_naive_count": qa.get("revision_timezone_naive_count", 0),
+                "scanned_series_count": qa.get("scanned_series_count", 0),
+                "scanned_observation_count": qa.get("scanned_observation_count", 0),
+            }
+        )
+        issues = pd.DataFrame(qa.get("issues", []))
+        st.caption("Normalization issues")
+        st.dataframe(issues, use_container_width=True)
+    all_sources = service.list_source_health(limit=500)
+    left, right = st.columns(2)
+    with left:
+        st.caption("Source threshold override")
+        source_options = [item.id for item in all_sources]
+        if source_options:
+            selected_source_id = st.selectbox("Source", source_options)
+            selected_source = next(item for item in all_sources if item.id == selected_source_id)
+            threshold_minutes = st.number_input(
+                "Stale threshold (minutes)",
+                min_value=1,
+                value=int(selected_source.stale_threshold_minutes),
+                step=30,
+            )
+            if st.button("Update source threshold"):
+                updated = service.set_source_stale_threshold(selected_source_id, int(threshold_minutes))
+                st.success(f"Updated {updated.id} stale threshold to {updated.stale_threshold_minutes} minutes")
+        else:
+            st.info("No tracked sources yet. Query data first to initialize source records.")
+    with right:
+        st.caption("Source health policy")
+        policy_catalog_scope = st.selectbox(
+            "Policy scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="source_policy_catalog_scope",
+        )
+        policy_catalog = service.list_source_health_policies(
+            include_archived=True,
+            limit=200,
+            owner_scope=policy_catalog_scope,
+        )
+        policy_selector_options = ["Create new"] + [item.id for item in policy_catalog]
+        selected_policy_ref = st.selectbox(
+            "Policy profile",
+            policy_selector_options,
+            format_func=lambda x: "Create new policy" if x == "Create new" else next(
+                f"{item.name} ({'active' if item.active else 'inactive'})"
+                for item in policy_catalog
+                if item.id == x
+            ),
+        )
+        editing_policy = None if selected_policy_ref == "Create new" else next(
+            item for item in policy_catalog if item.id == selected_policy_ref
+        )
+        state_key = "new" if editing_policy is None else editing_policy.id
+
+        policy_name = st.text_input(
+            "Policy name",
+            value="" if editing_policy is None else editing_policy.name,
+            key=f"source_policy_name_{state_key}",
+        )
+        policy_owner_scope_default = "shared" if editing_policy is None else editing_policy.owner_scope
+        policy_owner_scope = st.selectbox(
+            "Policy owner scope",
+            ["shared", "private"],
+            index=0 if policy_owner_scope_default == "shared" else 1,
+            key=f"source_policy_owner_scope_{state_key}",
+        )
+        policy_kind_default = "all" if editing_policy is None or editing_policy.source_kind is None else editing_policy.source_kind
+        policy_kind = st.selectbox(
+            "Policy source kind",
+            ["all", "macro", "market"],
+            index=["all", "macro", "market"].index(policy_kind_default),
+            key=f"source_policy_kind_{state_key}",
+        )
+        policy_source_scope_default = (
+            "single source"
+            if editing_policy is not None and editing_policy.source_id
+            else "all"
+        )
+        policy_source_scope = st.selectbox(
+            "Policy source scope",
+            ["all", "single source"],
+            index=["all", "single source"].index(policy_source_scope_default),
+            key=f"source_policy_scope_{state_key}",
+        )
+        policy_source_id = None
+        if policy_source_scope == "single source" and source_options:
+            source_index = 0
+            if editing_policy is not None and editing_policy.source_id in source_options:
+                source_index = source_options.index(editing_policy.source_id)
+            policy_source_id = st.selectbox(
+                "Policy source",
+                source_options,
+                index=source_index,
+                key=f"source_policy_source_{state_key}",
+            )
+        trigger_degraded = st.checkbox(
+            "Trigger on degraded",
+            value=True if editing_policy is None else editing_policy.trigger_on_degraded,
+            key=f"source_policy_trigger_degraded_{state_key}",
+        )
+        trigger_down = st.checkbox(
+            "Trigger on down",
+            value=True if editing_policy is None else editing_policy.trigger_on_down,
+            key=f"source_policy_trigger_down_{state_key}",
+        )
+        trigger_stale = st.checkbox(
+            "Trigger on stale",
+            value=True if editing_policy is None else editing_policy.trigger_on_stale,
+            key=f"source_policy_trigger_stale_{state_key}",
+        )
+        min_failures = st.number_input(
+            "Min consecutive failures",
+            min_value=1,
+            value=1 if editing_policy is None else int(editing_policy.min_consecutive_failures),
+            step=1,
+            key=f"source_policy_min_failures_{state_key}",
+        )
+        policy_stale_threshold = st.number_input(
+            "Override stale threshold (minutes, optional)",
+            min_value=0,
+            value=0 if editing_policy is None or editing_policy.stale_threshold_minutes is None else int(editing_policy.stale_threshold_minutes),
+            step=30,
+            key=f"source_policy_stale_threshold_{state_key}",
+        )
+        policy_cooldown = st.number_input(
+            "Policy cooldown (minutes)",
+            min_value=0,
+            value=60 if editing_policy is None else int(editing_policy.cooldown_minutes),
+            step=5,
+            key=f"source_policy_cooldown_{state_key}",
+        )
+        channels = service.list_notification_channels()
+        selected_channels = st.multiselect(
+            "Notification channels",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.notification_channel_ids,
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_channels_{state_key}",
+        )
+        severity_down_default = "high" if editing_policy is None else editing_policy.reason_severity.get("down", "high")
+        severity_degraded_default = "medium" if editing_policy is None else editing_policy.reason_severity.get("degraded", "medium")
+        severity_stale_default = "low" if editing_policy is None else editing_policy.reason_severity.get("stale", "low")
+        severity_down = st.selectbox("Severity for down", ["high", "medium", "low"], index=["high", "medium", "low"].index(severity_down_default), key=f"source_policy_severity_down_{state_key}")
+        severity_degraded = st.selectbox("Severity for degraded", ["high", "medium", "low"], index=["high", "medium", "low"].index(severity_degraded_default), key=f"source_policy_severity_degraded_{state_key}")
+        severity_stale = st.selectbox("Severity for stale", ["high", "medium", "low"], index=["high", "medium", "low"].index(severity_stale_default), key=f"source_policy_severity_stale_{state_key}")
+        subject_template_down = st.text_input(
+            "Subject template (down)",
+            value="[{severity}] {source_id} is {status} ({reason})" if editing_policy is None else editing_policy.reason_subject_templates.get("down", "[{severity}] {source_id} is {status} ({reason})"),
+            help="Use placeholders: {source_id}, {source_kind}, {provider}, {reason}, {status}, {severity}",
+            key=f"source_policy_subject_down_{state_key}",
+        )
+        subject_template_degraded = st.text_input(
+            "Subject template (degraded)",
+            value="[{severity}] {source_id} is {status} ({reason})" if editing_policy is None else editing_policy.reason_subject_templates.get("degraded", "[{severity}] {source_id} is {status} ({reason})"),
+            key=f"source_policy_subject_degraded_{state_key}",
+        )
+        subject_template_stale = st.text_input(
+            "Subject template (stale)",
+            value="[{severity}] {source_id} is {status} ({reason})" if editing_policy is None else editing_policy.reason_subject_templates.get("stale", "[{severity}] {source_id} is {status} ({reason})"),
+            key=f"source_policy_subject_stale_{state_key}",
+        )
+        override_down = st.multiselect(
+            "Reason channels: down",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.reason_channel_overrides.get("down", []),
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_channels_down_{state_key}",
+        )
+        override_degraded = st.multiselect(
+            "Reason channels: degraded",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.reason_channel_overrides.get("degraded", []),
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_channels_degraded_{state_key}",
+        )
+        override_stale = st.multiselect(
+            "Reason channels: stale",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.reason_channel_overrides.get("stale", []),
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_channels_stale_{state_key}",
+        )
+        escalation_channels = st.multiselect(
+            "Escalation channels",
+            options=[item.id for item in channels],
+            default=[] if editing_policy is None else editing_policy.escalation_channel_ids,
+            format_func=lambda x: next(item.name for item in channels if item.id == x),
+            key=f"source_policy_escalation_channels_{state_key}",
+        )
+        escalation_threshold = st.number_input(
+            "Escalation failure threshold",
+            min_value=1,
+            value=3 if editing_policy is None else int(editing_policy.escalation_failure_threshold),
+            step=1,
+            key=f"source_policy_escalation_threshold_{state_key}",
+        )
+        active_weekdays = st.multiselect(
+            "Active weekdays",
+            options=list(range(7)),
+            default=[0, 1, 2, 3, 4, 5, 6] if editing_policy is None else editing_policy.active_weekdays,
+            format_func=lambda x: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][x],
+            key=f"source_policy_active_weekdays_{state_key}",
+        )
+        policy_timezone = st.text_input("Policy timezone", value="Asia/Shanghai" if editing_policy is None else editing_policy.timezone, key=f"source_policy_timezone_{state_key}")
+        holiday_calendar_default = "none" if editing_policy is None else editing_policy.holiday_calendar
+        holiday_calendar = st.selectbox(
+            "Holiday calendar",
+            ["none", "us", "uk", "eu", "jp", "cn"],
+            index=["none", "us", "uk", "eu", "jp", "cn"].index(holiday_calendar_default),
+            key=f"source_policy_holiday_calendar_{state_key}",
+        )
+        custom_holidays_text = st.text_input(
+            "Custom holidays (YYYY-MM-DD, comma-separated)",
+            value="" if editing_policy is None else ", ".join(item.isoformat() for item in editing_policy.holiday_dates),
+            key=f"source_policy_custom_holidays_{state_key}",
+        )
+        active_hour_start = st.number_input("Active hour start", min_value=0, max_value=23, value=0 if editing_policy is None else int(editing_policy.active_hour_start), step=1, key=f"source_policy_active_hour_start_{state_key}")
+        active_hour_end = st.number_input("Active hour end", min_value=1, max_value=24, value=24 if editing_policy is None else int(editing_policy.active_hour_end), step=1, key=f"source_policy_active_hour_end_{state_key}")
+        allow_down_outside_schedule = st.checkbox(
+            "Allow down alerts outside schedule",
+            value=True if editing_policy is None else editing_policy.allow_down_outside_schedule,
+            key=f"source_policy_allow_down_outside_{state_key}",
+        )
+        policy_active = st.checkbox(
+            "Policy active",
+            value=True if editing_policy is None else editing_policy.active,
+            key=f"source_policy_active_{state_key}",
+        )
+        save_label = "Save source health policy" if editing_policy is None else "Update source health policy"
+        allow_shared_policy_mutation = st.checkbox(
+            "Allow shared policy mutation",
+            value=True,
+            key=f"source_policy_allow_shared_mutation_{state_key}",
+        )
+        if st.button(save_label) and policy_name.strip():
+            custom_holidays = []
+            parse_ok = True
+            if custom_holidays_text.strip():
+                try:
+                    custom_holidays = [
+                        date.fromisoformat(part.strip())
+                        for part in custom_holidays_text.split(",")
+                        if part.strip()
+                    ]
+                except ValueError:
+                    st.error("Invalid custom holiday format. Use YYYY-MM-DD, comma-separated.")
+                    parse_ok = False
+            if not parse_ok:
+                st.stop()
+            policy = SourceHealthPolicy(
+                id=f"source-health-policy-{uuid4().hex[:8]}" if editing_policy is None else editing_policy.id,
+                name=policy_name.strip(),
+                source_kind=None if policy_kind == "all" else policy_kind,
+                source_id=policy_source_id,
+                trigger_on_degraded=trigger_degraded,
+                trigger_on_down=trigger_down,
+                trigger_on_stale=trigger_stale,
+                min_consecutive_failures=int(min_failures),
+                stale_threshold_minutes=int(policy_stale_threshold) if policy_stale_threshold > 0 else None,
+                cooldown_minutes=int(policy_cooldown),
+                notification_channel_ids=selected_channels,
+                reason_channel_overrides={
+                    "down": override_down,
+                    "degraded": override_degraded,
+                    "stale": override_stale,
+                },
+                reason_severity={
+                    "down": severity_down,
+                    "degraded": severity_degraded,
+                    "stale": severity_stale,
+                },
+                reason_subject_templates={
+                    "down": subject_template_down or "Source Health Alert [{severity}]: {source_id} ({reason})",
+                    "degraded": subject_template_degraded or "Source Health Alert [{severity}]: {source_id} ({reason})",
+                    "stale": subject_template_stale or "Source Health Alert [{severity}]: {source_id} ({reason})",
+                },
+                escalation_channel_ids=escalation_channels,
+                escalation_failure_threshold=int(escalation_threshold),
+                active_weekdays=active_weekdays,
+                active_hour_start=int(active_hour_start),
+                active_hour_end=int(active_hour_end),
+                allow_down_outside_schedule=allow_down_outside_schedule,
+                timezone=policy_timezone.strip() or "UTC",
+                holiday_calendar=holiday_calendar,
+                holiday_dates=custom_holidays,
+                owner_scope=policy_owner_scope,
+                active=policy_active,
+                last_triggered_at=None if editing_policy is None else editing_policy.last_triggered_at,
+            )
+            try:
+                service.save_source_health_policy(
+                    policy,
+                    allow_shared_mutation=allow_shared_policy_mutation,
+                )
+                st.success(f"Saved policy: {policy.name} ({'active' if policy.active else 'inactive'})")
+            except PermissionError as exc:
+                st.error(str(exc))
+        if editing_policy is not None:
+            lifecycle_left, lifecycle_right = st.columns(2)
+            with lifecycle_left:
+                if editing_policy.archived_at is None:
+                    archive_reason = st.text_input(
+                        "Archive reason",
+                        value="",
+                        key=f"source_policy_archive_reason_{state_key}",
+                    )
+                    if st.button("Archive policy", key=f"source_policy_archive_button_{state_key}"):
+                        try:
+                            updated = service.archive_source_health_policy(
+                                editing_policy.id,
+                                reason=archive_reason or None,
+                                allow_shared_mutation=allow_shared_policy_mutation,
+                            )
+                            st.success(f"Archived policy: {updated.name}")
+                        except PermissionError as exc:
+                            st.error(str(exc))
+                else:
+                    st.caption(f"Archived at: {editing_policy.archived_at}")
+                    if editing_policy.archived_reason:
+                        st.caption(f"Reason: {editing_policy.archived_reason}")
+            with lifecycle_right:
+                if editing_policy.archived_at is not None:
+                    if st.button("Restore policy", key=f"source_policy_restore_button_{state_key}"):
+                        try:
+                            updated = service.restore_source_health_policy(
+                                editing_policy.id,
+                                allow_shared_mutation=allow_shared_policy_mutation,
+                            )
+                            st.success(f"Restored policy: {updated.name}")
+                        except PermissionError as exc:
+                            st.error(str(exc))
+            preset_sort_left, preset_sort_right = st.columns(2)
+            with preset_sort_left:
+                preset_sort_by = st.selectbox(
+                    "Preset sort by",
+                    ["name", "usage_count", "last_used_at", "updated_at", "created_at", "is_default"],
+                    index=0,
+                    key=f"source_policy_version_preset_sort_{state_key}",
+                )
+            with preset_sort_right:
+                preset_sort_order = st.selectbox(
+                    "Preset order",
+                    ["asc", "desc"],
+                    index=0,
+                    key=f"source_policy_version_preset_order_{state_key}",
+                )
+            preset_page_left, preset_page_right = st.columns(2)
+            with preset_page_left:
+                preset_limit = st.number_input(
+                    "Preset page size",
+                    min_value=1,
+                    max_value=200,
+                    value=50,
+                    step=10,
+                    key=f"source_policy_version_preset_limit_{state_key}",
+                )
+            with preset_page_right:
+                preset_offset = st.number_input(
+                    "Preset offset",
+                    min_value=0,
+                    value=0,
+                    step=10,
+                    key=f"source_policy_version_preset_offset_{state_key}",
+                )
+            preset_filter_left, preset_filter_right = st.columns(2)
+            with preset_filter_left:
+                preset_search_query = st.text_input(
+                    "Preset search",
+                    value="",
+                    placeholder="Name, action, or query text",
+                    key=f"source_policy_version_preset_query_{state_key}",
+                )
+            with preset_filter_right:
+                preset_only_default = st.checkbox(
+                    "Only default preset",
+                    value=False,
+                    key=f"source_policy_version_preset_only_default_{state_key}",
+                )
+            preset_scope_filter = st.selectbox(
+                "Preset owner scope filter",
+                ["all", "shared", "private"],
+                index=0,
+                key=f"source_policy_version_preset_scope_{state_key}",
+            )
+            version_presets = service.list_source_health_policy_version_presets(
+                editing_policy.id,
+                limit=int(preset_limit),
+                offset=int(preset_offset),
+                sort_by=preset_sort_by,
+                order=preset_sort_order,
+                query=preset_search_query or None,
+                only_default=bool(preset_only_default),
+                owner_scope=preset_scope_filter,
+            )
+            preset_summary = service.get_source_health_policy_version_preset_summary(editing_policy.id)
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("Preset total", int(preset_summary.get("total_presets", 0)))
+            summary_cols[1].metric("Default preset", str(preset_summary.get("default_preset_name") or "-"))
+            summary_cols[2].metric(
+                "Most used",
+                f"{preset_summary.get('most_used_preset_name') or '-'} ({int(preset_summary.get('most_used_count', 0))})",
+            )
+            summary_cols[3].metric("Last used", str(preset_summary.get("last_used_preset_name") or "-"))
+            preset_options = ["Custom"] + [item.id for item in version_presets]
+            default_preset = next((item for item in version_presets if item.is_default), None)
+            preset_select_key = f"source_policy_version_preset_select_{state_key}"
+            if preset_select_key not in st.session_state:
+                st.session_state[preset_select_key] = default_preset.id if default_preset is not None else "Custom"
+            if st.session_state[preset_select_key] not in preset_options:
+                st.session_state[preset_select_key] = "Custom"
+            selected_preset = None
+            preset_selector = st.selectbox(
+                "Version preset",
+                preset_options,
+                format_func=lambda x: "Custom filters" if x == "Custom" else next(
+                    f"{item.name}{' [default]' if item.is_default else ''} "
+                    f"(action={item.action_filter or 'all'}, query={item.query or 'blank'}, used={item.usage_count})"
+                    for item in version_presets
+                    if item.id == x
+                ),
+                key=preset_select_key,
+            )
+            if preset_selector != "Custom":
+                selected_preset = next(item for item in version_presets if item.id == preset_selector)
+            preview_key = f"source_policy_version_preset_preview_rows_{state_key}"
+            if preview_key not in st.session_state:
+                st.session_state[preview_key] = []
+            load_left, load_right = st.columns(2)
+            with load_left:
+                if selected_preset is not None and st.button("Load preset", key=f"source_policy_load_version_preset_{state_key}"):
+                    st.session_state[f"source_policy_version_action_{state_key}"] = selected_preset.action_filter or "all"
+                    st.session_state[f"source_policy_version_query_{state_key}"] = selected_preset.query or ""
+                    st.session_state[f"source_policy_version_limit_{state_key}"] = int(selected_preset.limit)
+                    st.rerun()
+                if selected_preset is not None and st.button(
+                    "Preview selected preset",
+                    key=f"source_policy_preview_version_preset_{state_key}",
+                ):
+                    st.session_state[preview_key] = [
+                        item.model_dump(mode="json")
+                        for item in service.list_source_health_policy_versions_by_preset(selected_preset.id)
+                    ]
+            version_action_filter = st.selectbox(
+                "Version action filter",
+                ["all", "create", "update", "archive", "restore", "rollback"],
+                key=f"source_policy_version_action_{state_key}",
+            )
+            version_query = st.text_input(
+                "Version search",
+                value="",
+                placeholder="Field, summary, or changed field",
+                key=f"source_policy_version_query_{state_key}",
+            )
+            version_limit = st.number_input(
+                "Version history limit",
+                min_value=1,
+                max_value=200,
+                value=20,
+                step=5,
+                key=f"source_policy_version_limit_{state_key}",
+            )
+            with load_right:
+                version_preset_owner_scope = st.selectbox(
+                    "Version preset owner scope",
+                    ["shared", "private"],
+                    index=0 if selected_preset is None or selected_preset.owner_scope == "shared" else 1,
+                    key=f"source_policy_version_preset_owner_scope_{state_key}",
+                )
+                allow_version_preset_shared_mutation = st.checkbox(
+                    "Allow shared version preset mutation",
+                    value=True,
+                    key=f"source_policy_allow_shared_version_preset_mutation_{state_key}",
+                )
+                preset_is_default = st.checkbox(
+                    "Mark saved preset as default",
+                    value=False if selected_preset is None else selected_preset.is_default,
+                    key=f"source_policy_version_is_default_{state_key}",
+                )
+                preset_name = st.text_input(
+                    "Save preset as",
+                    value="",
+                    key=f"source_policy_version_preset_name_{state_key}",
+                )
+                if st.button("Save preset", key=f"source_policy_save_version_preset_{state_key}") and preset_name.strip():
+                    preset = SourceHealthPolicyVersionPreset(
+                        id=f"source-policy-version-preset-{uuid4().hex[:8]}",
+                        policy_id=editing_policy.id,
+                        name=preset_name.strip(),
+                        action_filter=None if version_action_filter == "all" else version_action_filter,
+                        query=version_query or None,
+                        limit=int(version_limit),
+                        is_default=bool(preset_is_default),
+                        owner_scope=version_preset_owner_scope,
+                    )
+                    try:
+                        service.save_source_health_policy_version_preset(
+                            preset,
+                            allow_shared_mutation=allow_version_preset_shared_mutation,
+                        )
+                        st.success(f"Saved version preset: {preset.name}")
+                        st.rerun()
+                    except (PermissionError, ValueError) as exc:
+                        st.error(str(exc))
+                if selected_preset is not None:
+                    st.caption(f"Selected preset: {selected_preset.name}{' [default]' if selected_preset.is_default else ''}")
+                    st.caption(
+                        "Preset timestamps: "
+                        f"created={selected_preset.created_at or 'n/a'}, "
+                        f"updated={selected_preset.updated_at or 'n/a'}, "
+                        f"last_used={selected_preset.last_used_at or 'never'}, "
+                        f"usage_count={selected_preset.usage_count}"
+                    )
+                    rename_name = st.text_input(
+                        "Rename selected preset",
+                        value=selected_preset.name,
+                        key=f"source_policy_rename_version_preset_name_{state_key}",
+                    )
+                    if st.button("Rename selected preset", key=f"source_policy_rename_version_preset_{state_key}"):
+                        try:
+                            updated = service.rename_source_health_policy_version_preset(
+                                selected_preset.id,
+                                rename_name,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
+                            st.success(f"Renamed version preset: {updated.name}")
+                            st.rerun()
+                        except (PermissionError, ValueError) as exc:
+                            st.error(str(exc))
+                    if st.button("Update selected preset", key=f"source_policy_update_version_preset_{state_key}"):
+                        updated_preset = SourceHealthPolicyVersionPreset(
+                            id=selected_preset.id,
+                            policy_id=editing_policy.id,
+                            name=selected_preset.name,
+                            action_filter=None if version_action_filter == "all" else version_action_filter,
+                            query=version_query or None,
+                            limit=int(version_limit),
+                            is_default=bool(preset_is_default),
+                            owner_scope=version_preset_owner_scope,
+                        )
+                        try:
+                            service.save_source_health_policy_version_preset(
+                                updated_preset,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
+                            st.success(f"Updated version preset: {selected_preset.name}")
+                            st.rerun()
+                        except (PermissionError, ValueError) as exc:
+                            st.error(str(exc))
+                    if st.button("Set selected as default", key=f"source_policy_set_default_version_preset_{state_key}"):
+                        try:
+                            updated = service.set_default_source_health_policy_version_preset(
+                                selected_preset.id,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
+                            st.success(f"Default preset set: {updated.name}")
+                            st.rerun()
+                        except (PermissionError, ValueError) as exc:
+                            st.error(str(exc))
+                    clone_name = st.text_input(
+                        "Clone as",
+                        value=f"{selected_preset.name} copy",
+                        key=f"source_policy_clone_version_preset_name_{state_key}",
+                    )
+                    if st.button("Clone selected preset", key=f"source_policy_clone_version_preset_{state_key}"):
+                        try:
+                            clone = service.clone_source_health_policy_version_preset(
+                                selected_preset.id,
+                                name=clone_name,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
+                            st.success(f"Cloned version preset: {clone.name}")
+                            st.rerun()
+                        except (PermissionError, ValueError) as exc:
+                            st.error(str(exc))
+                    if st.button("Delete selected preset", key=f"source_policy_delete_version_preset_{state_key}"):
+                        try:
+                            service.delete_source_health_policy_version_preset(
+                                selected_preset.id,
+                                allow_shared_mutation=allow_version_preset_shared_mutation,
+                            )
+                            st.success(f"Deleted version preset: {selected_preset.name}")
+                            st.rerun()
+                        except PermissionError as exc:
+                            st.error(str(exc))
+                st.caption("Preset bundle import/export")
+                export_text_key = f"source_policy_version_preset_bundle_{state_key}"
+                if export_text_key not in st.session_state:
+                    st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
+                        editing_policy.id,
+                        owner_scope=preset_scope_filter,
+                    ).model_dump_json(indent=2)
+                refresh_export_key = f"source_policy_refresh_version_preset_bundle_{state_key}"
+                if st.button("Refresh preset bundle JSON", key=refresh_export_key):
+                    st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
+                        editing_policy.id,
+                        owner_scope=preset_scope_filter,
+                    ).model_dump_json(indent=2)
+                bundle_json = st.text_area(
+                    "Preset bundle JSON",
+                    height=220,
+                    key=export_text_key,
+                )
+                import_mode = st.selectbox(
+                    "Import mode",
+                    ["append", "upsert", "replace"],
+                    index=0,
+                    key=f"source_policy_import_version_preset_mode_{state_key}",
+                )
+                import_preview_key = f"source_policy_import_version_preset_preview_{state_key}"
+                if import_preview_key not in st.session_state:
+                    st.session_state[import_preview_key] = None
+                if st.button("Preview preset bundle import", key=f"source_policy_preview_import_version_preset_{state_key}"):
+                    try:
+                        payload = json.loads(bundle_json)
+                        preset_rows: list[dict[str, object]]
+                        if isinstance(payload, dict) and isinstance(payload.get("presets"), list):
+                            preset_rows = payload["presets"]
+                        elif isinstance(payload, list):
+                            preset_rows = payload
+                        else:
+                            raise ValueError("Preset bundle must be a JSON object with 'presets' or a JSON list.")
+                        import_request = SourceHealthPolicyVersionPresetImportRequest.model_validate(
+                            {"mode": import_mode, "presets": preset_rows}
+                        )
+                        st.session_state[import_preview_key] = service.preview_source_health_policy_version_presets_import(
+                            policy_id=editing_policy.id,
+                            request=import_request,
+                        )
+                    except Exception as exc:
+                        st.session_state[import_preview_key] = {"valid": False, "errors": [str(exc)], "actions": []}
+                if st.button("Import preset bundle", key=f"source_policy_import_version_preset_{state_key}"):
+                    try:
+                        payload = json.loads(bundle_json)
+                        preset_rows: list[dict[str, object]]
+                        if isinstance(payload, dict) and isinstance(payload.get("presets"), list):
+                            preset_rows = payload["presets"]
+                        elif isinstance(payload, list):
+                            preset_rows = payload
+                        else:
+                            raise ValueError("Preset bundle must be a JSON object with 'presets' or a JSON list.")
+                        import_request = SourceHealthPolicyVersionPresetImportRequest.model_validate(
+                            {"mode": import_mode, "presets": preset_rows}
+                        )
+                        imported = service.import_source_health_policy_version_presets(
+                            policy_id=editing_policy.id,
+                            request=import_request,
+                            allow_shared_mutation=allow_version_preset_shared_mutation,
+                        )
+                        st.success(f"Imported {len(imported)} preset(s) in {import_mode} mode.")
+                        st.session_state[export_text_key] = service.export_source_health_policy_version_presets(
+                            editing_policy.id,
+                            owner_scope=preset_scope_filter,
+                        ).model_dump_json(indent=2)
+                        st.session_state[import_preview_key] = None
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Import failed: {exc}")
+                import_preview = st.session_state.get(import_preview_key)
+                if isinstance(import_preview, dict):
+                    if bool(import_preview.get("valid", False)):
+                        st.success(
+                            f"Import preview valid: create={import_preview.get('create_count', 0)}, "
+                            f"update={import_preview.get('update_count', 0)}, "
+                            f"conflict={import_preview.get('conflict_count', 0)}"
+                        )
+                    else:
+                        st.warning("Import preview invalid.")
+                    preview_errors = import_preview.get("errors", [])
+                    if preview_errors:
+                        for item in preview_errors:
+                            st.error(str(item))
+                    preview_actions = import_preview.get("actions", [])
+                    if preview_actions:
+                        st.caption("Import preview actions")
+                        st.dataframe(pd.DataFrame(preview_actions), use_container_width=True)
+            preview_rows = st.session_state.get(preview_key, [])
+            if preview_rows:
+                st.caption("Preset preview result")
+                st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
+            version_rows = service.list_source_health_policy_versions(
+                editing_policy.id,
+                limit=int(version_limit),
+                action=None if version_action_filter == "all" else version_action_filter,
+                query=version_query or None,
+            )
+            versions = pd.DataFrame([item.model_dump(mode="json") for item in version_rows])
+            st.caption("Policy versions")
+            st.caption(f"{len(version_rows)} version(s) matched the current filters")
+            st.dataframe(versions, use_container_width=True)
+            if not versions.empty:
+                rollback_version = st.selectbox(
+                    "Rollback to version",
+                    version_rows,
+                    format_func=lambda item: f"v{item.version_number} - {item.action} - {item.changed_at}",
+                    key=f"source_policy_rollback_version_{state_key}",
+                )
+                if st.button("Rollback to selected version", key=f"source_policy_rollback_button_{state_key}"):
+                    try:
+                        restored = service.rollback_source_health_policy_version(
+                            rollback_version.id,
+                            allow_shared_mutation=allow_shared_policy_mutation,
+                        )
+                        st.success(f"Rolled back policy: {restored.name}")
+                    except PermissionError as exc:
+                        st.error(str(exc))
+                compare_left, compare_right = st.columns(2)
+                with compare_left:
+                    left_version = st.selectbox(
+                        "Compare left version",
+                        version_rows,
+                        format_func=lambda item: f"v{item.version_number} - {item.action}",
+                        key=f"source_policy_compare_left_{state_key}",
+                    )
+                with compare_right:
+                    right_version = st.selectbox(
+                        "Compare right version",
+                        version_rows,
+                        format_func=lambda item: f"v{item.version_number} - {item.action}",
+                        key=f"source_policy_compare_right_{state_key}",
+                    )
+                if st.button("Compare selected versions", key=f"source_policy_compare_button_{state_key}"):
+                    st.session_state[f"source_policy_compare_result_{state_key}"] = service.compare_source_health_policy_versions(
+                        left_version.id,
+                        right_version.id,
+                    )
+                compare_result = st.session_state.get(f"source_policy_compare_result_{state_key}")
+                if compare_result:
+                    st.caption(
+                        f"Comparing v{compare_result['left_version_number']} ({compare_result['left_action']}) "
+                        f"to v{compare_result['right_version_number']} ({compare_result['right_action']})"
+                    )
+                    diff_frame = pd.DataFrame(compare_result["diffs"])
+                    st.dataframe(diff_frame, use_container_width=True)
+                    json_payload = json.dumps(compare_result, indent=2, default=str)
+                    csv_payload = diff_frame.to_csv(index=False) if not diff_frame.empty else "field,left_value,right_value\n"
+                    download_left, download_right = st.columns(2)
+                    with download_left:
+                        st.download_button(
+                            "Download compare JSON",
+                            data=json_payload,
+                            file_name=f"source-policy-compare-{state_key}.json",
+                            mime="application/json",
+                            key=f"source_policy_compare_json_{state_key}",
+                        )
+                    with download_right:
+                        st.download_button(
+                            "Download compare CSV",
+                            data=csv_payload,
+                            file_name=f"source-policy-compare-{state_key}.csv",
+                            mime="text/csv",
+                            key=f"source_policy_compare_csv_{state_key}",
+                        )
+        if st.button("Run source health policies"):
+            actions = service.run_source_health_policies(owner_scope=policy_catalog_scope)
+            st.success(f"Executed source health policies: {len(actions)} action(s)")
+            st.dataframe(pd.DataFrame(actions), use_container_width=True)
+        policies = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_source_health_policies(
+                    include_archived=True,
+                    limit=200,
+                    owner_scope=policy_catalog_scope,
+                )
+            ]
+        )
+        st.dataframe(policies, use_container_width=True)
+        policy_runs = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_source_health_policy_runs(
+                    limit=50,
+                    owner_scope=policy_catalog_scope,
+                )
+            ]
+        )
+        st.caption("Recent policy runs")
+        st.dataframe(policy_runs, use_container_width=True)
+    stale_rows = pd.DataFrame(
+        [
+            item.model_dump(mode="json")
+            for item in service.list_source_health(limit=200)
+            if item.is_stale or item.status in {"degraded", "down"}
+        ]
+    )
+    st.caption("Attention required")
+    st.dataframe(stale_rows, use_container_width=True)
 
 elif view == "Change Monitor":
     st.subheader("Change Monitor")
@@ -142,6 +1736,22 @@ elif view == "Change Monitor":
         ]
     )
     st.dataframe(rows, use_container_width=True)
+    delta_rows = pd.DataFrame(
+        service.get_change_monitor_deltas(
+            country=None if country_filter == "All" else country_filter,
+            topic=None if topic_filter == "All" else topic_filter,
+            asset_class=None if asset_filter == "All" else asset_filter,
+            limit=limit,
+        )
+    )
+    if not delta_rows.empty:
+        trend_counts = delta_rows["trend"].value_counts()
+        metric_accel, metric_reverse, metric_decel = st.columns(3)
+        metric_accel.metric("Accelerating", int(trend_counts.get("accelerating", 0)))
+        metric_reverse.metric("Reversing", int(trend_counts.get("reversing", 0)))
+        metric_decel.metric("Decelerating", int(trend_counts.get("decelerating", 0)))
+        st.caption("What Changed Since Prior Signal")
+        st.dataframe(delta_rows, use_container_width=True)
     if not rows.empty:
         scatter = px.scatter(
             rows,
@@ -159,12 +1769,18 @@ elif view == "Alert Center":
     left, right = st.columns(2)
     with left:
         st.caption("Create alert rule")
+        alert_rule_scope_filter = st.selectbox(
+            "Alert rule scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="alert_rule_scope_filter",
+        )
         rule_name = st.text_input("Rule name", value="")
         entity_type = st.selectbox("Entity type", ["any", "series", "asset"])
         topic = st.selectbox("Topic", ["all", "inflation", "labor", "policy", "rates", "fx", "growth", "markets"])
         country = st.selectbox("Country", ["all", "US", "EA", "CN", "JP", "GB", "CA"])
         asset_class = st.selectbox("Asset class", ["all", "equities", "rates", "commodities", "fx", "crypto"])
-        saved_watchlists = service.list_watchlists()
+        saved_watchlists = service.list_watchlists(owner_scope="all")
         watchlist_options = ["none"] + [item.id for item in saved_watchlists]
         watchlist_id = st.selectbox(
             "Watchlist filter",
@@ -174,11 +1790,17 @@ elif view == "Alert Center":
         min_significance = st.selectbox("Minimum significance", ["high", "medium", "low"], index=1)
         min_abs_change = st.number_input("Minimum absolute change", min_value=0.0, value=0.0, step=0.1)
         min_pct_change = st.number_input("Minimum percent change", min_value=0.0, value=0.0, step=0.5)
-        channels = service.list_notification_channels(active_only=True)
+        channels = service.list_notification_channels(active_only=True, owner_scope="all")
         selected_channels = st.multiselect(
             "Notification channels",
             options=[item.id for item in channels],
             format_func=lambda x: next(item.name for item in channels if item.id == x),
+        )
+        alert_rule_owner_scope = st.selectbox("Alert rule owner scope", ["shared", "private"], index=0, key="alert_rule_owner_scope")
+        allow_alert_rule_shared_mutation = st.checkbox(
+            "Allow shared alert rule mutation",
+            value=True,
+            key="allow_alert_rule_shared_mutation",
         )
         active = st.checkbox("Active", value=True, key="alert_active")
         if st.button("Save alert rule") and rule_name.strip():
@@ -194,15 +1816,68 @@ elif view == "Alert Center":
                 min_absolute_change=min_abs_change or None,
                 min_percent_change=min_pct_change or None,
                 notification_channel_ids=selected_channels,
+                owner_scope=alert_rule_owner_scope,
                 active=active,
             )
-            service.save_change_alert_rule(rule)
-            st.success(f"Saved alert rule: {rule.name}")
-        rules = pd.DataFrame([item.model_dump(mode="json") for item in service.list_change_alert_rules()])
+            try:
+                service.save_change_alert_rule(
+                    rule,
+                    allow_shared_mutation=allow_alert_rule_shared_mutation,
+                )
+                st.success(f"Saved alert rule: {rule.name}")
+            except (PermissionError, ValueError) as exc:
+                st.error(str(exc))
+        rule_rows = service.list_change_alert_rules(owner_scope=alert_rule_scope_filter)
+        rules = pd.DataFrame([item.model_dump(mode="json") for item in rule_rows])
         st.dataframe(rules, use_container_width=True)
+        if rule_rows:
+            selected_rule_manage = st.selectbox(
+                "Manage alert rule",
+                [item.id for item in rule_rows],
+                key="alert_rule_manage_id",
+                format_func=lambda item_id: next(item.name for item in rule_rows if item.id == item_id),
+            )
+            active_rule = next(item for item in rule_rows if item.id == selected_rule_manage)
+            edit_alert_rule_scope = st.selectbox(
+                "Edit alert rule scope",
+                ["shared", "private"],
+                index=0 if active_rule.owner_scope == "shared" else 1,
+                key="alert_rule_edit_scope",
+            )
+            edit_alert_rule_active = st.checkbox(
+                "Edit alert rule active",
+                value=active_rule.active,
+                key="alert_rule_edit_active",
+            )
+            if st.button("Update alert rule", key="alert_rule_update"):
+                try:
+                    updated_rule = active_rule.model_copy(
+                        update={
+                            "owner_scope": edit_alert_rule_scope,
+                            "active": edit_alert_rule_active,
+                        }
+                    )
+                    service.save_change_alert_rule(
+                        updated_rule,
+                        allow_shared_mutation=allow_alert_rule_shared_mutation,
+                    )
+                    st.success(f"Updated alert rule: {updated_rule.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete alert rule", key="alert_rule_delete"):
+                try:
+                    service.delete_change_alert_rule(
+                        selected_rule_manage,
+                        allow_shared_mutation=allow_alert_rule_shared_mutation,
+                    )
+                    st.success(f"Deleted alert rule: {selected_rule_manage}")
+                    st.rerun()
+                except (PermissionError, KeyError) as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Alert events")
-        rules = service.list_change_alert_rules()
+        rules = service.list_change_alert_rules(owner_scope=alert_rule_scope_filter)
         selected_rule = st.selectbox(
             "Scan rule",
             ["all"] + [item.id for item in rules],
@@ -241,8 +1916,114 @@ elif view == "Notification Center":
     left, right = st.columns(2)
     with left:
         st.caption("Create notification channel")
+        notification_channel_scope_filter = st.selectbox(
+            "Notification channel scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="notification_channel_scope_filter",
+        )
+        existing_channels = service.list_notification_channels(owner_scope="all")
         channel_name = st.text_input("Channel name", value="")
         channel_kind = st.selectbox("Channel kind", ["file", "email", "webhook", "slack"])
+        channel_event_types = st.multiselect(
+            "Route event types",
+            options=["alert_event", "report_job", "manual"],
+            default=["alert_event", "report_job", "manual"],
+        )
+        channel_min_significance = st.selectbox("Minimum alert significance", ["high", "medium", "low"], index=2)
+        channel_delivery_mode = st.selectbox("Alert delivery mode", ["immediate", "digest"])
+        fallback_channel_ids = st.multiselect(
+            "Fallback channels",
+            options=[item.id for item in existing_channels],
+            format_func=lambda x: next(item.name for item in existing_channels if item.id == x),
+        )
+        escalation_channel_ids = st.multiselect(
+            "Escalation channels",
+            options=[item.id for item in existing_channels],
+            format_func=lambda x: next(item.name for item in existing_channels if item.id == x),
+        )
+        escalation_min_significance = st.selectbox("Escalation threshold", ["high", "medium", "low"], index=0)
+        ops_escalation_enabled = st.checkbox("Enable ops escalation policy", value=False)
+        ops_escalation_channel_ids = st.multiselect(
+            "Ops escalation targets",
+            options=[item.id for item in existing_channels],
+            format_func=lambda x: next(item.name for item in existing_channels if item.id == x),
+        )
+        ops_escalation_window_hours = st.slider(
+            "Ops escalation window (hours)",
+            min_value=1,
+            max_value=168,
+            value=6,
+            step=1,
+        )
+        ops_escalation_threshold = st.slider(
+            "Ops escalation adverse decision threshold",
+            min_value=1,
+            max_value=100,
+            value=5,
+            step=1,
+        )
+        ops_escalation_cooldown_minutes = st.slider(
+            "Ops escalation cooldown (minutes)",
+            min_value=0,
+            max_value=1440,
+            value=60,
+            step=5,
+        )
+        cooldown_minutes = st.slider("Cooldown minutes", min_value=0, max_value=1440, value=0, step=5)
+        duplicate_window_minutes = st.slider("Duplicate suppression window", min_value=0, max_value=1440, value=60, step=5)
+        retry_backoff_minutes = st.slider("Retry backoff minutes", min_value=0, max_value=240, value=15, step=5)
+        max_retry_attempts = st.slider("Max retry attempts", min_value=1, max_value=10, value=3, step=1)
+        auto_pause_enabled = st.checkbox("Enable auto-pause on failures", value=False)
+        auto_pause_window_hours = st.slider("Auto-pause lookback (hours)", min_value=1, max_value=168, value=24, step=1)
+        auto_pause_error_rate_threshold = st.slider(
+            "Auto-pause error-rate threshold",
+            min_value=0.05,
+            max_value=1.0,
+            value=0.5,
+            step=0.05,
+        )
+        auto_pause_consecutive_failures = st.slider(
+            "Auto-pause consecutive failures",
+            min_value=1,
+            max_value=20,
+            value=3,
+            step=1,
+        )
+        auto_pause_minutes = st.slider("Auto-pause duration (minutes)", min_value=5, max_value=1440, value=60, step=5)
+        auto_resume_enabled = st.checkbox("Enable auto-resume after auto-pause", value=False)
+        recovery_probe_profile = st.selectbox("Recovery probe profile", ["minimal", "standard", "verbose"], index=1)
+        recovery_probe_payload_text = st.text_area("Recovery probe payload override (JSON)", value="")
+        recovery_probe_cooldown_minutes = st.slider(
+            "Recovery probe cooldown (minutes)",
+            min_value=0,
+            max_value=240,
+            value=30,
+            step=5,
+        )
+        recovery_probe_max_per_hour = st.slider(
+            "Recovery probe max per hour",
+            min_value=1,
+            max_value=20,
+            value=2,
+            step=1,
+        )
+        recovery_probe_payload = {}
+        if recovery_probe_payload_text.strip():
+            try:
+                parsed_payload = json.loads(recovery_probe_payload_text)
+                if isinstance(parsed_payload, dict):
+                    recovery_probe_payload = parsed_payload
+                else:
+                    st.error("Recovery probe payload must be a JSON object.")
+            except json.JSONDecodeError:
+                st.error("Recovery probe payload JSON is invalid.")
+        pause_minutes = st.slider("Pause for minutes (optional)", min_value=0, max_value=1440, value=0, step=15)
+        pause_reason = st.text_input("Pause reason", value="")
+        digest_hour_local = st.slider("Digest hour (local)", min_value=0, max_value=23, value=8)
+        digest_limit = st.slider("Default digest rows", min_value=1, max_value=50, value=25, step=1)
+        digest_status_filter = st.selectbox("Default digest status", ["new", "published", "dismissed"])
+        digest_publish_included = st.checkbox("Publish digest events after send", value=False)
         target_help = {
             "file": "Folder or label for file drops",
             "email": "Recipient email address",
@@ -251,6 +2032,17 @@ elif view == "Notification Center":
         }
         channel_target = st.text_input("Target", value="", help=target_help[channel_kind])
         channel_notes = st.text_area("Channel notes", value="")
+        channel_owner_scope = st.selectbox(
+            "Notification channel owner scope",
+            ["shared", "private"],
+            index=0,
+            key="notification_channel_owner_scope",
+        )
+        allow_channel_shared_mutation = st.checkbox(
+            "Allow shared notification channel mutation",
+            value=True,
+            key="allow_notification_channel_shared_mutation",
+        )
         channel_active = st.checkbox("Channel active", value=True)
         if st.button("Save notification channel") and channel_name.strip() and channel_target.strip():
             channel = NotificationChannel(
@@ -258,16 +2050,117 @@ elif view == "Notification Center":
                 name=channel_name.strip(),
                 kind=channel_kind,
                 target=channel_target.strip(),
+                event_types=channel_event_types or ["manual"],
+                min_significance=channel_min_significance,
+                delivery_mode=channel_delivery_mode,
+                fallback_channel_ids=fallback_channel_ids,
+                escalation_channel_ids=escalation_channel_ids,
+                escalation_min_significance=escalation_min_significance,
+                ops_escalation_enabled=ops_escalation_enabled,
+                ops_escalation_channel_ids=ops_escalation_channel_ids,
+                ops_escalation_window_hours=ops_escalation_window_hours,
+                ops_escalation_threshold=ops_escalation_threshold,
+                ops_escalation_cooldown_minutes=ops_escalation_cooldown_minutes,
+                cooldown_minutes=cooldown_minutes,
+                duplicate_window_minutes=duplicate_window_minutes,
+                retry_backoff_minutes=retry_backoff_minutes,
+                max_retry_attempts=max_retry_attempts,
+                auto_pause_enabled=auto_pause_enabled,
+                auto_pause_window_hours=auto_pause_window_hours,
+                auto_pause_error_rate_threshold=auto_pause_error_rate_threshold,
+                auto_pause_consecutive_failures=auto_pause_consecutive_failures,
+                auto_pause_minutes=auto_pause_minutes,
+                auto_resume_enabled=auto_resume_enabled,
+                recovery_probe_profile=recovery_probe_profile,
+                recovery_probe_payload=recovery_probe_payload,
+                recovery_probe_cooldown_minutes=recovery_probe_cooldown_minutes,
+                recovery_probe_max_per_hour=recovery_probe_max_per_hour,
+                paused_until=(datetime.now() + timedelta(minutes=pause_minutes)) if pause_minutes > 0 else None,
+                pause_reason=pause_reason.strip() or None,
+                digest_hour_local=digest_hour_local,
+                digest_limit=digest_limit,
+                digest_status_filter=digest_status_filter,
+                digest_publish_included=digest_publish_included,
+                owner_scope=channel_owner_scope,
                 notes=channel_notes or None,
                 active=channel_active,
             )
-            service.save_notification_channel(channel)
-            st.success(f"Saved notification channel: {channel.name}")
-        channels_frame = pd.DataFrame([item.model_dump(mode="json") for item in service.list_notification_channels()])
+            try:
+                service.save_notification_channel(
+                    channel,
+                    allow_shared_mutation=allow_channel_shared_mutation,
+                )
+                st.success(f"Saved notification channel: {channel.name}")
+            except (PermissionError, ValueError) as exc:
+                st.error(str(exc))
+        channel_rows = service.list_notification_channels(owner_scope=notification_channel_scope_filter)
+        channels_frame = pd.DataFrame([item.model_dump(mode="json") for item in channel_rows])
         st.dataframe(channels_frame, use_container_width=True)
+        if channel_rows:
+            selected_channel_manage = st.selectbox(
+                "Manage notification channel",
+                [item.id for item in channel_rows],
+                key="notification_channel_manage_id",
+                format_func=lambda item_id: next(item.name for item in channel_rows if item.id == item_id),
+            )
+            active_channel = next(item for item in channel_rows if item.id == selected_channel_manage)
+            edit_channel_scope = st.selectbox(
+                "Edit notification channel scope",
+                ["shared", "private"],
+                index=0 if active_channel.owner_scope == "shared" else 1,
+                key="notification_channel_edit_scope",
+            )
+            edit_channel_active = st.checkbox(
+                "Edit notification channel active",
+                value=active_channel.active,
+                key="notification_channel_edit_active",
+            )
+            if st.button("Update notification channel", key="notification_channel_update"):
+                try:
+                    updated_channel = active_channel.model_copy(
+                        update={
+                            "owner_scope": edit_channel_scope,
+                            "active": edit_channel_active,
+                        }
+                    )
+                    service.save_notification_channel(
+                        updated_channel,
+                        allow_shared_mutation=allow_channel_shared_mutation,
+                    )
+                    st.success(f"Updated notification channel: {updated_channel.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete notification channel", key="notification_channel_delete"):
+                try:
+                    service.delete_notification_channel(
+                        selected_channel_manage,
+                        allow_shared_mutation=allow_channel_shared_mutation,
+                    )
+                    st.success(f"Deleted notification channel: {selected_channel_manage}")
+                    st.rerun()
+                except (PermissionError, KeyError) as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Delivery history")
-        channels = service.list_notification_channels()
+        channels = service.list_notification_channels(owner_scope=notification_channel_scope_filter)
+        allow_channel_actions_shared_mutation = st.checkbox(
+            "Allow shared channel mutation for actions",
+            value=True,
+            key="allow_notification_channel_action_shared_mutation",
+        )
+        health_window_hours = st.slider("Health window (hours)", min_value=1, max_value=168, value=24, step=1)
+        health = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_notification_channel_health(
+                    window_hours=health_window_hours,
+                    owner_scope=notification_channel_scope_filter,
+                )
+            ]
+        )
+        st.caption("Channel health")
+        st.dataframe(health, use_container_width=True)
         channel_filter = st.selectbox(
             "Channel filter",
             ["all"] + [item.id for item in channels],
@@ -283,10 +2176,51 @@ elif view == "Notification Center":
                     event_type=None if event_type_filter == "all" else event_type_filter,
                     status=None if status_filter == "all" else status_filter,
                     limit=100,
+                    owner_scope=notification_channel_scope_filter,
                 )
             ]
         )
         st.dataframe(deliveries, use_container_width=True)
+        route_decision_filter = st.selectbox(
+            "Routing decision",
+            ["all", "delivered", "failed", "suppressed", "paused", "inactive", "rejected", "digest_deferred"],
+        )
+        routing_rows = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_notification_routing_audits(
+                    channel_id=None if channel_filter == "all" else channel_filter,
+                    event_type=None if event_type_filter == "all" else event_type_filter,
+                    decision=None if route_decision_filter == "all" else route_decision_filter,
+                    limit=200,
+                    owner_scope=notification_channel_scope_filter,
+                )
+            ]
+        )
+        st.caption("Routing audit")
+        st.dataframe(routing_rows, use_container_width=True)
+        summary_window = st.slider("Routing summary window (hours)", min_value=1, max_value=168, value=24, step=1)
+        routing_summary = pd.DataFrame(
+            service.get_notification_routing_summary(
+                channel_id=None if channel_filter == "all" else channel_filter,
+                event_type=None if event_type_filter == "all" else event_type_filter,
+                window_hours=summary_window,
+                owner_scope=notification_channel_scope_filter,
+            )
+        )
+        st.caption("Routing summary")
+        st.dataframe(routing_summary, use_container_width=True)
+        export_format = st.selectbox("Routing export format", ["csv", "json"])
+        if st.button("Export routing audit"):
+            result = service.export_notification_routing_audits(
+                format=export_format,
+                channel_id=None if channel_filter == "all" else channel_filter,
+                event_type=None if event_type_filter == "all" else event_type_filter,
+                decision=None if route_decision_filter == "all" else route_decision_filter,
+                limit=5000,
+                owner_scope=notification_channel_scope_filter,
+            )
+            st.success(f"Exported {result['count']} rows to {result['path']}")
         if channels:
             test_channel_id = st.selectbox(
                 "Send test notification",
@@ -296,23 +2230,166 @@ elif view == "Notification Center":
             )
             test_subject = st.text_input("Test subject", value="")
             if st.button("Send test notification"):
-                delivery = service.send_test_notification(test_channel_id, subject=test_subject or None)
-                st.success(f"Sent test notification via {delivery.channel_name}")
+                try:
+                    delivery = service.send_test_notification(
+                        test_channel_id,
+                        subject=test_subject or None,
+                        owner_scope=notification_channel_scope_filter,
+                    )
+                    st.success(f"Sent test notification via {delivery.channel_name}")
+                except KeyError:
+                    st.error("Notification channel is outside the selected scope.")
+            pause_channel_id = st.selectbox(
+                "Pause or resume channel",
+                [item.id for item in channels],
+                key="pause_channel_id",
+                format_func=lambda x: next(item.name for item in channels if item.id == x),
+            )
+            pause_minutes_action = st.slider("Pause duration (minutes)", min_value=5, max_value=1440, value=60, step=5)
+            pause_reason_action = st.text_input("Pause reason (action)", value="", key="pause_reason_action")
+            pause_col, resume_col = st.columns(2)
+            with pause_col:
+                if st.button("Pause channel"):
+                    try:
+                        channel = service.pause_notification_channel(
+                            pause_channel_id,
+                            minutes=pause_minutes_action,
+                            reason=pause_reason_action.strip() or None,
+                            allow_shared_mutation=allow_channel_actions_shared_mutation,
+                        )
+                        st.success(f"Paused {channel.name} until {channel.paused_until}")
+                    except PermissionError as exc:
+                        st.error(str(exc))
+            with resume_col:
+                if st.button("Resume channel"):
+                    try:
+                        channel = service.resume_notification_channel(
+                            pause_channel_id,
+                            allow_shared_mutation=allow_channel_actions_shared_mutation,
+                        )
+                        st.success(f"Resumed {channel.name}")
+                    except PermissionError as exc:
+                        st.error(str(exc))
+            if st.button("Run recovery checks"):
+                recoveries = service.run_notification_channel_recovery()
+                st.success(f"Recovery checks completed: {len(recoveries)} channel action(s)")
+            digest_channel_options = [item.id for item in channels if "alert_event" in item.event_types]
+            if digest_channel_options:
+                digest_channel_id = st.selectbox(
+                    "Send digest",
+                    digest_channel_options,
+                    key="digest_notification_channel",
+                    format_func=lambda x: next(item.name for item in channels if item.id == x),
+                )
+                digest_status = st.selectbox("Digest event status", ["new", "published", "dismissed"])
+                digest_limit = st.slider("Digest rows", min_value=1, max_value=50, value=10, step=1)
+                publish_digest_events = st.checkbox("Mark digest events published", value=False)
+                if st.button("Send alert digest"):
+                    try:
+                        digest = service.send_notification_digest(
+                            digest_channel_id,
+                            status=digest_status,
+                            limit=digest_limit,
+                            publish_included=publish_digest_events,
+                            owner_scope=notification_channel_scope_filter,
+                        )
+                        st.success(f"Sent digest {digest.id} with {digest.event_count} event(s)")
+                    except (KeyError, ValueError) as exc:
+                        st.error(str(exc))
+                if st.button("Run due digests"):
+                    completed = service.run_due_notification_digests(owner_scope=notification_channel_scope_filter)
+                    st.success(f"Ran {len(completed)} due digest channel(s)")
         delivery_rows = service.list_notification_deliveries(
             channel_id=None if channel_filter == "all" else channel_filter,
             event_type=None if event_type_filter == "all" else event_type_filter,
             status=None if status_filter == "all" else status_filter,
             limit=100,
+            owner_scope=notification_channel_scope_filter,
         )
         if delivery_rows:
             retry_delivery_id = st.selectbox("Retry delivery", [item.id for item in delivery_rows])
             if st.button("Retry selected delivery"):
-                delivery = service.retry_notification_delivery(retry_delivery_id)
-                st.success(f"Retried delivery {delivery.id} via {delivery.channel_name}")
+                try:
+                    delivery = service.retry_notification_delivery(
+                        retry_delivery_id,
+                        owner_scope=notification_channel_scope_filter,
+                    )
+                    st.success(f"Retried delivery {delivery.id} via {delivery.channel_name}")
+                except (KeyError, ValueError) as exc:
+                    st.error(str(exc))
+        digests = pd.DataFrame(
+            [
+                item.model_dump(mode="json")
+                for item in service.list_notification_digests(
+                    channel_id=None if channel_filter == "all" else channel_filter,
+                    limit=50,
+                    owner_scope=notification_channel_scope_filter,
+                )
+            ]
+        )
+        st.caption("Digest history")
+        st.dataframe(digests, use_container_width=True)
+
+elif view == "Ops Incidents":
+    st.subheader("Ops Incidents")
+    summary = service.get_ops_incident_summary()
+    metric_total, metric_open, metric_ack, metric_overdue = st.columns(4)
+    metric_total.metric("Total", summary.get("total", 0))
+    metric_open.metric("Open", summary.get("open", 0))
+    metric_ack.metric("Ack", summary.get("ack", 0))
+    metric_overdue.metric("Overdue Active", summary.get("overdue_active", 0))
+
+    all_incidents = service.list_ops_incidents(limit=500)
+    source_options = ["all"] + sorted({item.source_channel_id for item in all_incidents})
+    status_filter = st.selectbox("Incident status", ["all", "open", "ack", "resolved"])
+    source_filter = st.selectbox("Source channel", source_options)
+    overdue_only = st.checkbox("Overdue only", value=False)
+    incidents = service.list_ops_incidents(
+        status=None if status_filter == "all" else status_filter,
+        source_channel_id=None if source_filter == "all" else source_filter,
+        overdue_only=overdue_only,
+        limit=200,
+    )
+    incident_frame = pd.DataFrame([item.model_dump(mode="json") for item in incidents])
+    st.dataframe(incident_frame, use_container_width=True)
+    if incidents:
+        selected_incident = st.selectbox(
+            "Incident",
+            [item.id for item in incidents],
+            format_func=lambda x: next(
+                f"{item.source_channel_name} ({item.status}, {item.priority})"
+                for item in incidents
+                if item.id == x
+            ),
+        )
+        selected = next(item for item in incidents if item.id == selected_incident)
+        next_status = st.selectbox("Set status", ["open", "ack", "resolved"], index=["open", "ack", "resolved"].index(selected.status))
+        owner_value = st.text_input("Owner", value=selected.owner or "")
+        next_priority = st.selectbox(
+            "Priority",
+            ["low", "medium", "high"],
+            index=["low", "medium", "high"].index(selected.priority),
+        )
+        sla_minutes = st.number_input("SLA (minutes)", min_value=0, value=int(selected.sla_minutes), step=15)
+        incident_notes = st.text_input("Incident notes", value=selected.notes or "")
+        if st.button("Update incident"):
+            updated = service.update_ops_incident(
+                incident_id=selected_incident,
+                status=next_status,
+                owner=owner_value,
+                priority=next_priority,
+                sla_minutes=int(sla_minutes),
+                notes=incident_notes or None,
+            )
+            st.success(
+                f"Updated {updated.id}: status={updated.status}, owner={updated.owner or '-'}, "
+                f"priority={updated.priority}, due={updated.due_at}"
+            )
 
 elif view == "Screening Lab":
     st.subheader("Screening Lab")
-    saved_watchlists = service.list_watchlists()
+    watchlist_scope = st.selectbox("Watchlist scope", ["all", "shared", "private"], index=0, key="screening_watchlist_scope")
+    saved_watchlists = service.list_watchlists(owner_scope=watchlist_scope)
     watchlist_options = {"All tracked assets": list(service.market_universe.keys())}
     for watchlist in saved_watchlists:
         watchlist_options[watchlist.name] = watchlist.tickers
@@ -329,35 +2406,229 @@ elif view == "Screening Lab":
     saved_screen_name = st.text_input("Save current screen as", value="")
     if st.button("Save screen") and saved_screen_name.strip():
         payload = SavedScreen(id=f"screen-{uuid4().hex[:8]}", name=saved_screen_name.strip(), spec=spec)
-        service.save_saved_screen(payload)
+        service.save_saved_screen(payload, allow_shared_mutation=True)
         st.success(f"Saved screen: {payload.name}")
-    results = pd.DataFrame(service.run_screen(spec))
+    explain = service.run_screen_explain(spec)
+    results = pd.DataFrame(explain.get("ranked_results", []))
     st.dataframe(results, use_container_width=True)
+    explain_rows = pd.DataFrame(explain.get("explanations", []))
+    st.caption("Screen explainability")
+    st.dataframe(explain_rows, use_container_width=True)
+    if not explain_rows.empty:
+        selected_trace_ticker = st.selectbox("Trace ticker", explain_rows["ticker"].tolist(), key="screen_trace_ticker")
+        selected_trace = next(item for item in explain.get("explanations", []) if item["ticker"] == selected_trace_ticker)
+        st.caption(f"Filter trace: {selected_trace_ticker}")
+        st.json(selected_trace.get("filter_trace", []))
 
 elif view == "Research Library":
     st.subheader("Research Library")
-    left, right = st.columns(2)
+    left, right, extra = st.columns(3)
     with left:
         st.caption("Watchlists")
+        watchlist_scope = st.selectbox("Watchlist scope filter", ["all", "shared", "private"], index=0, key="research_watchlist_scope")
         name = st.text_input("Watchlist name", value="")
         tickers = st.multiselect("Tickers", options=list(service.market_universe.keys()))
         notes = st.text_area("Notes", value="")
         if st.button("Save watchlist") and name.strip() and tickers:
             watchlist = Watchlist(id=f"watchlist-{uuid4().hex[:8]}", name=name.strip(), tickers=tickers, notes=notes or None)
-            service.save_watchlist(watchlist)
+            service.save_watchlist(watchlist, allow_shared_mutation=True)
             st.success(f"Saved watchlist: {watchlist.name}")
-        watchlists = pd.DataFrame([item.model_dump(mode="json") for item in service.list_watchlists()])
+        watchlist_rows = service.list_watchlists(owner_scope=watchlist_scope)
+        watchlists = pd.DataFrame([item.model_dump(mode="json") for item in watchlist_rows])
         st.dataframe(watchlists, use_container_width=True)
+        if watchlist_rows:
+            selected_watchlist = st.selectbox(
+                "Manage watchlist",
+                [item.id for item in watchlist_rows],
+                key="research_watchlist_manage_id",
+                format_func=lambda item_id: next(item.name for item in watchlist_rows if item.id == item_id),
+            )
+            active_watchlist = next(item for item in watchlist_rows if item.id == selected_watchlist)
+            edit_watchlist_name = st.text_input(
+                "Edit watchlist name",
+                value=active_watchlist.name,
+                key="research_watchlist_edit_name",
+            )
+            edit_watchlist_tickers = st.multiselect(
+                "Edit watchlist tickers",
+                options=list(service.market_universe.keys()),
+                default=active_watchlist.tickers,
+                key="research_watchlist_edit_tickers",
+            )
+            edit_watchlist_notes = st.text_area(
+                "Edit watchlist notes",
+                value=active_watchlist.notes or "",
+                key="research_watchlist_edit_notes",
+            )
+            edit_watchlist_scope = st.selectbox(
+                "Edit watchlist scope",
+                ["shared", "private"],
+                index=0 if active_watchlist.owner_scope == "shared" else 1,
+                key="research_watchlist_edit_scope",
+            )
+            allow_watchlist_shared = st.checkbox(
+                "Allow shared watchlist mutation",
+                value=True,
+                key="research_watchlist_allow_shared",
+            )
+            if st.button("Update watchlist", key="research_watchlist_update"):
+                try:
+                    updated_watchlist = Watchlist(
+                        id=active_watchlist.id,
+                        name=edit_watchlist_name.strip() or active_watchlist.name,
+                        tickers=edit_watchlist_tickers or active_watchlist.tickers,
+                        owner_scope=edit_watchlist_scope,
+                        notes=edit_watchlist_notes or None,
+                    )
+                    service.save_watchlist(
+                        updated_watchlist,
+                        allow_shared_mutation=allow_watchlist_shared,
+                    )
+                    st.success(f"Updated watchlist: {updated_watchlist.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete watchlist", key="research_watchlist_delete"):
+                try:
+                    service.delete_watchlist(
+                        selected_watchlist,
+                        allow_shared_mutation=allow_watchlist_shared,
+                    )
+                    st.success(f"Deleted watchlist: {selected_watchlist}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Saved screens")
-        saved_screens = pd.DataFrame([item.model_dump(mode="json") for item in service.list_saved_screens()])
+        screen_scope = st.selectbox("Screen scope filter", ["all", "shared", "private"], index=0, key="research_screen_scope")
+        screen_rows = service.list_saved_screens(owner_scope=screen_scope)
+        saved_screens = pd.DataFrame([item.model_dump(mode="json") for item in screen_rows])
         st.dataframe(saved_screens, use_container_width=True)
+        if screen_rows:
+            selected_screen = st.selectbox(
+                "Manage screen",
+                [item.id for item in screen_rows],
+                key="research_screen_manage_id",
+                format_func=lambda item_id: next(item.name for item in screen_rows if item.id == item_id),
+            )
+            active_screen = next(item for item in screen_rows if item.id == selected_screen)
+            edit_screen_name = st.text_input(
+                "Edit screen name",
+                value=active_screen.name,
+                key="research_screen_edit_name",
+            )
+            edit_screen_scope = st.selectbox(
+                "Edit screen scope",
+                ["shared", "private"],
+                index=0 if active_screen.owner_scope == "shared" else 1,
+                key="research_screen_edit_scope",
+            )
+            allow_screen_shared = st.checkbox(
+                "Allow shared screen mutation",
+                value=True,
+                key="research_screen_allow_shared",
+            )
+            if st.button("Update screen", key="research_screen_update"):
+                try:
+                    updated_screen = SavedScreen(
+                        id=active_screen.id,
+                        name=edit_screen_name.strip() or active_screen.name,
+                        owner_scope=edit_screen_scope,
+                        spec=active_screen.spec,
+                    )
+                    service.save_saved_screen(
+                        updated_screen,
+                        allow_shared_mutation=allow_screen_shared,
+                    )
+                    st.success(f"Updated screen: {updated_screen.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete screen", key="research_screen_delete"):
+                try:
+                    service.delete_saved_screen(
+                        selected_screen,
+                        allow_shared_mutation=allow_screen_shared,
+                    )
+                    st.success(f"Deleted screen: {selected_screen}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
+    with extra:
+        st.caption("Custom Dashboards")
+        dashboard_scope = st.selectbox("Dashboard scope filter", ["all", "shared", "private"], index=0, key="research_dashboard_scope")
+        dashboard_rows = service.list_persisted_dashboards(owner_scope=dashboard_scope)
+        dashboards_frame = pd.DataFrame([item.model_dump(mode="json") for item in dashboard_rows])
+        st.dataframe(dashboards_frame, use_container_width=True)
+        if dashboard_rows:
+            selected_dashboard = st.selectbox(
+                "Manage dashboard",
+                [item.id for item in dashboard_rows],
+                key="research_dashboard_manage_id",
+                format_func=lambda item_id: next(item.name for item in dashboard_rows if item.id == item_id),
+            )
+            active_dashboard = next(item for item in dashboard_rows if item.id == selected_dashboard)
+            edit_dashboard_name = st.text_input(
+                "Edit dashboard name",
+                value=active_dashboard.name,
+                key="research_dashboard_edit_name",
+            )
+            edit_dashboard_scope = st.selectbox(
+                "Edit dashboard scope",
+                ["shared", "private"],
+                index=0 if active_dashboard.owner_scope == "shared" else 1,
+                key="research_dashboard_edit_scope",
+            )
+            edit_dashboard_refresh = st.selectbox(
+                "Edit refresh policy",
+                ["daily", "manual"],
+                index=0 if active_dashboard.refresh_policy == "daily" else 1,
+                key="research_dashboard_edit_refresh",
+            )
+            allow_dashboard_shared = st.checkbox(
+                "Allow shared dashboard mutation",
+                value=True,
+                key="research_dashboard_allow_shared",
+            )
+            if st.button("Update dashboard", key="research_dashboard_update"):
+                try:
+                    updated_dashboard = active_dashboard.model_copy(
+                        update={
+                            "name": edit_dashboard_name.strip() or active_dashboard.name,
+                            "owner_scope": edit_dashboard_scope,
+                            "refresh_policy": edit_dashboard_refresh,
+                        }
+                    )
+                    service.save_dashboard(
+                        updated_dashboard,
+                        allow_shared_mutation=allow_dashboard_shared,
+                    )
+                    st.success(f"Updated dashboard: {updated_dashboard.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete dashboard", key="research_dashboard_delete"):
+                try:
+                    service.delete_dashboard(
+                        selected_dashboard,
+                        allow_shared_mutation=allow_dashboard_shared,
+                    )
+                    st.success(f"Deleted dashboard: {selected_dashboard}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
 
 elif view == "Portfolio Lab":
     st.subheader("Portfolio Lab")
     left, right = st.columns(2)
     with left:
         st.caption("Scenario Builder")
+        scenario_scope = st.selectbox(
+            "Scenario scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="portfolio_lab_scenario_scope",
+        )
         scenario_name = st.text_input("Scenario name", value="")
         shock_target = st.selectbox("Shock target", ["asset_class", "ticker"])
         if shock_target == "asset_class":
@@ -373,12 +2644,66 @@ elif view == "Portfolio Lab":
                 name=scenario_name.strip(),
                 shocks=[ScenarioShock(label="Primary shock", asset_class=asset_class, ticker=ticker, shock_pct=shock_pct)],
             )
-            service.save_scenario(scenario)
+            service.save_scenario(scenario, allow_shared_mutation=True)
             st.success(f"Saved scenario: {scenario.name}")
-        scenarios = pd.DataFrame([item.model_dump(mode="json") for item in service.list_scenarios()])
+        scenario_rows = service.list_scenarios(owner_scope=scenario_scope)
+        scenarios = pd.DataFrame([item.model_dump(mode="json") for item in scenario_rows])
         st.dataframe(scenarios, use_container_width=True)
+        if scenario_rows:
+            selected_scenario_manage = st.selectbox(
+                "Manage scenario",
+                [item.id for item in scenario_rows],
+                key="portfolio_lab_scenario_manage_id",
+                format_func=lambda x: next(item.name for item in scenario_rows if item.id == x),
+            )
+            active_scenario = next(item for item in scenario_rows if item.id == selected_scenario_manage)
+            edit_scenario_name = st.text_input(
+                "Edit scenario name",
+                value=active_scenario.name,
+                key="portfolio_lab_scenario_edit_name",
+            )
+            edit_scenario_scope = st.selectbox(
+                "Edit scenario scope",
+                ["shared", "private"],
+                index=0 if active_scenario.owner_scope == "shared" else 1,
+                key="portfolio_lab_scenario_edit_scope",
+            )
+            allow_scenario_shared = st.checkbox(
+                "Allow shared scenario mutation",
+                value=True,
+                key="portfolio_lab_scenario_allow_shared",
+            )
+            if st.button("Update scenario", key="portfolio_lab_scenario_update"):
+                try:
+                    updated = active_scenario.model_copy(
+                        update={
+                            "name": edit_scenario_name.strip() or active_scenario.name,
+                            "owner_scope": edit_scenario_scope,
+                        }
+                    )
+                    service.save_scenario(updated, allow_shared_mutation=allow_scenario_shared)
+                    st.success(f"Updated scenario: {updated.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete scenario", key="portfolio_lab_scenario_delete"):
+                try:
+                    service.delete_scenario(
+                        selected_scenario_manage,
+                        allow_shared_mutation=allow_scenario_shared,
+                    )
+                    st.success(f"Deleted scenario: {selected_scenario_manage}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Model Portfolio")
+        portfolio_scope = st.selectbox(
+            "Portfolio scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="portfolio_lab_portfolio_scope",
+        )
         portfolio_name = st.text_input("Portfolio name", value="")
         selected_tickers = st.multiselect("Holdings", options=list(service.market_universe.keys()))
         default_weight = round(100 / len(selected_tickers), 2) if selected_tickers else 0.0
@@ -388,11 +2713,61 @@ elif view == "Portfolio Lab":
                 for ticker in selected_tickers
             ]
             portfolio = ModelPortfolio(id=f"portfolio-{uuid4().hex[:8]}", name=portfolio_name.strip(), holdings=holdings)
-            service.save_model_portfolio(portfolio)
+            service.save_model_portfolio(portfolio, allow_shared_mutation=True)
             st.success(f"Saved portfolio: {portfolio.name}")
-        portfolios = service.list_model_portfolios()
+        portfolios = service.list_model_portfolios(owner_scope=portfolio_scope)
         portfolio_frame = pd.DataFrame([item.model_dump(mode="json") for item in portfolios])
         st.dataframe(portfolio_frame, use_container_width=True)
+        if portfolios:
+            selected_portfolio_manage = st.selectbox(
+                "Manage portfolio",
+                [item.id for item in portfolios],
+                key="portfolio_lab_portfolio_manage_id",
+                format_func=lambda x: next(item.name for item in portfolios if item.id == x),
+            )
+            active_portfolio = next(item for item in portfolios if item.id == selected_portfolio_manage)
+            edit_portfolio_name = st.text_input(
+                "Edit portfolio name",
+                value=active_portfolio.name,
+                key="portfolio_lab_portfolio_edit_name",
+            )
+            edit_portfolio_scope = st.selectbox(
+                "Edit portfolio scope",
+                ["shared", "private"],
+                index=0 if active_portfolio.owner_scope == "shared" else 1,
+                key="portfolio_lab_portfolio_edit_scope",
+            )
+            allow_portfolio_shared = st.checkbox(
+                "Allow shared portfolio mutation",
+                value=True,
+                key="portfolio_lab_portfolio_allow_shared",
+            )
+            if st.button("Update portfolio", key="portfolio_lab_portfolio_update"):
+                try:
+                    updated_portfolio = active_portfolio.model_copy(
+                        update={
+                            "name": edit_portfolio_name.strip() or active_portfolio.name,
+                            "owner_scope": edit_portfolio_scope,
+                        }
+                    )
+                    service.save_model_portfolio(
+                        updated_portfolio,
+                        allow_shared_mutation=allow_portfolio_shared,
+                    )
+                    st.success(f"Updated portfolio: {updated_portfolio.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete portfolio", key="portfolio_lab_portfolio_delete"):
+                try:
+                    service.delete_model_portfolio(
+                        selected_portfolio_manage,
+                        allow_shared_mutation=allow_portfolio_shared,
+                    )
+                    st.success(f"Deleted portfolio: {selected_portfolio_manage}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
 
     st.caption("Portfolio Summary")
     portfolios = service.list_model_portfolios()
@@ -414,6 +2789,12 @@ elif view == "Report Studio":
     left, right = st.columns(2)
     with left:
         st.caption("Create report template")
+        template_scope = st.selectbox(
+            "Template scope filter",
+            ["all", "shared", "private"],
+            index=0,
+            key="report_template_scope_filter",
+        )
         template_name = st.text_input("Template name", value="")
         section_kind = st.selectbox(
             "Section type",
@@ -482,10 +2863,61 @@ elif view == "Report Studio":
                 name=template_name.strip(),
                 sections=[ReportTemplateSection(kind=section_kind, title=section_title.strip(), ref_id=ref_id, params=params)],
             )
-            service.save_report_template(template)
+            service.save_report_template(template, allow_shared_mutation=True)
             st.success(f"Saved report template: {template.name}")
-        templates = pd.DataFrame([item.model_dump(mode="json") for item in service.list_report_templates()])
+        template_rows = service.list_report_templates(owner_scope=template_scope)
+        templates = pd.DataFrame([item.model_dump(mode="json") for item in template_rows])
         st.dataframe(templates, use_container_width=True)
+        if template_rows:
+            selected_template_manage = st.selectbox(
+                "Manage template",
+                [item.id for item in template_rows],
+                key="report_template_manage_id",
+                format_func=lambda item_id: next(item.name for item in template_rows if item.id == item_id),
+            )
+            active_template = next(item for item in template_rows if item.id == selected_template_manage)
+            edit_template_name = st.text_input(
+                "Edit template name",
+                value=active_template.name,
+                key="report_template_edit_name",
+            )
+            edit_template_scope = st.selectbox(
+                "Edit template scope",
+                ["shared", "private"],
+                index=0 if active_template.owner_scope == "shared" else 1,
+                key="report_template_edit_scope",
+            )
+            allow_template_shared = st.checkbox(
+                "Allow shared template mutation",
+                value=True,
+                key="report_template_allow_shared",
+            )
+            if st.button("Update template", key="report_template_update"):
+                try:
+                    updated_template = active_template.model_copy(
+                        update={
+                            "name": edit_template_name.strip() or active_template.name,
+                            "owner_scope": edit_template_scope,
+                        }
+                    )
+                    service.save_report_template(
+                        updated_template,
+                        allow_shared_mutation=allow_template_shared,
+                    )
+                    st.success(f"Updated template: {updated_template.id}")
+                    st.rerun()
+                except (PermissionError, ValueError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete template", key="report_template_delete"):
+                try:
+                    service.delete_report_template(
+                        selected_template_manage,
+                        allow_shared_mutation=allow_template_shared,
+                    )
+                    st.success(f"Deleted template: {selected_template_manage}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
     with right:
         st.caption("Generate report snapshot")
         templates = service.list_report_templates()
@@ -524,6 +2956,12 @@ elif view == "Report Studio":
     templates = service.list_report_templates()
     with jobs_left:
         if templates:
+            job_scope = st.selectbox(
+                "Job scope filter",
+                ["all", "shared", "private"],
+                index=0,
+                key="report_job_scope_filter",
+            )
             job_name = st.text_input("Job name", value="")
             selected_template_for_job = st.selectbox(
                 "Template for job",
@@ -565,12 +3003,12 @@ elif view == "Report Studio":
                     notification_channel_ids=selected_job_channels,
                     active=active,
                 )
-                service.save_report_job(job)
+                service.save_report_job(job, allow_shared_mutation=True)
                 st.success(f"Saved report job: {job.name}")
         else:
             st.info("Create a report template first.")
     with jobs_right:
-        jobs = service.list_report_jobs()
+        jobs = service.list_report_jobs(owner_scope=st.session_state.get("report_job_scope_filter", "all"))
         jobs_frame = pd.DataFrame([item.model_dump(mode="json") for item in jobs])
         st.dataframe(jobs_frame, use_container_width=True)
         if jobs:
@@ -582,6 +3020,49 @@ elif view == "Report Studio":
             if st.button("Run selected job now"):
                 completed_job = service.run_report_job(selected_job)
                 st.success(f"Ran job: {completed_job.name}")
+            selected_job_manage = st.selectbox(
+                "Manage job",
+                [item.id for item in jobs],
+                key="report_job_manage_id",
+                format_func=lambda item_id: next(item.name for item in jobs if item.id == item_id),
+            )
+            active_job = next(item for item in jobs if item.id == selected_job_manage)
+            edit_job_name = st.text_input(
+                "Edit job name",
+                value=active_job.name,
+                key="report_job_edit_name",
+            )
+            edit_job_scope = st.selectbox(
+                "Edit job scope",
+                ["shared", "private"],
+                index=0 if active_job.owner_scope == "shared" else 1,
+                key="report_job_edit_scope",
+            )
+            allow_job_shared = st.checkbox(
+                "Allow shared job mutation",
+                value=True,
+                key="report_job_allow_shared",
+            )
+            if st.button("Update job", key="report_job_update"):
+                try:
+                    updated_job = active_job.model_copy(
+                        update={
+                            "name": edit_job_name.strip() or active_job.name,
+                            "owner_scope": edit_job_scope,
+                        }
+                    )
+                    service.save_report_job(updated_job, allow_shared_mutation=allow_job_shared)
+                    st.success(f"Updated job: {updated_job.id}")
+                    st.rerun()
+                except (PermissionError, ValueError, KeyError) as exc:
+                    st.error(str(exc))
+            if st.button("Delete job", key="report_job_delete"):
+                try:
+                    service.delete_report_job(selected_job_manage, allow_shared_mutation=allow_job_shared)
+                    st.success(f"Deleted job: {selected_job_manage}")
+                    st.rerun()
+                except PermissionError as exc:
+                    st.error(str(exc))
             if st.button("Run due jobs"):
                 completed = service.run_due_report_jobs()
                 st.success(f"Ran {len(completed)} due jobs")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import delete, select
 
@@ -9,11 +9,16 @@ from macro_platform.domain.models import (
     AssetPrice,
     ChangeAlertEvent,
     ChangeAlertRule,
+    CrossCountryPreset,
     DashboardConfig,
     ModelPortfolio,
     NotificationChannel,
+    NotificationDigest,
     NotificationDelivery,
+    NotificationRoutingAudit,
+    OpsIncident,
     Observation,
+    ReleaseFreshnessSnapshot,
     ReportJob,
     ReportJobRun,
     ReportSnapshot,
@@ -21,6 +26,11 @@ from macro_platform.domain.models import (
     SavedScreen,
     ScenarioDefinition,
     SeriesDefinition,
+    SourceHealth,
+    SourceHealthPolicy,
+    SourceHealthPolicyRun,
+    SourceHealthPolicyVersion,
+    SourceHealthPolicyVersionPreset,
     Watchlist,
 )
 from macro_platform.storage.database import Database
@@ -31,15 +41,25 @@ from macro_platform.storage.tables import (
     DashboardRecord,
     ModelPortfolioRecord,
     NotificationChannelRecord,
+    NotificationDigestRecord,
     NotificationDeliveryRecord,
+    NotificationRoutingAuditRecord,
+    OpsIncidentRecord,
     ObservationRecord,
     ReportJobRecord,
     ReportJobRunRecord,
     ReportSnapshotRecord,
     ReportTemplateRecord,
+    ReleaseFreshnessSnapshotRecord,
     SavedScreenRecord,
+    CrossCountryPresetRecord,
     ScenarioRecord,
     SeriesDefinitionRecord,
+    SourceHealthRecord,
+    SourceHealthPolicyRecord,
+    SourceHealthPolicyRunRecord,
+    SourceHealthPolicyVersionRecord,
+    SourceHealthPolicyVersionPresetRecord,
     WatchlistRecord,
 )
 
@@ -136,9 +156,12 @@ class DashboardRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[DashboardConfig]:
+    def list_saved(self, owner_scope: str | None = None) -> list[DashboardConfig]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(DashboardRecord).order_by(DashboardRecord.id.asc())).scalars().all()
+            statement = select(DashboardRecord).order_by(DashboardRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(DashboardRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [
                 DashboardConfig.model_validate(json.loads(row.payload))
                 for row in rows
@@ -163,6 +186,10 @@ class DashboardRepository:
                 )
             )
         return dashboard
+
+    def delete(self, dashboard_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(DashboardRecord).where(DashboardRecord.id == dashboard_id))
 
 
 class AssetPriceRepository:
@@ -242,9 +269,12 @@ class ChangeAlertRuleRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ChangeAlertRule]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ChangeAlertRule]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ChangeAlertRuleRecord).order_by(ChangeAlertRuleRecord.id.asc())).scalars().all()
+            statement = select(ChangeAlertRuleRecord).order_by(ChangeAlertRuleRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ChangeAlertRuleRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ChangeAlertRule.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, rule_id: str) -> ChangeAlertRule | None:
@@ -266,6 +296,10 @@ class ChangeAlertRuleRepository:
                 )
             )
         return rule
+
+    def delete(self, rule_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ChangeAlertRuleRecord).where(ChangeAlertRuleRecord.id == rule_id))
 
 
 class ChangeAlertEventRepository:
@@ -313,11 +347,13 @@ class NotificationChannelRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self, active_only: bool = False) -> list[NotificationChannel]:
+    def list_saved(self, active_only: bool = False, owner_scope: str | None = None) -> list[NotificationChannel]:
         with self.database.session_scope() as session:
             statement = select(NotificationChannelRecord).order_by(NotificationChannelRecord.id.asc())
             if active_only:
                 statement = statement.where(NotificationChannelRecord.active == "true")
+            if owner_scope:
+                statement = statement.where(NotificationChannelRecord.owner_scope == owner_scope)
             rows = session.execute(statement).scalars().all()
             return [NotificationChannel.model_validate(json.loads(row.payload)) for row in rows]
 
@@ -341,6 +377,10 @@ class NotificationChannelRepository:
                 )
             )
         return channel
+
+    def delete(self, channel_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(NotificationChannelRecord).where(NotificationChannelRecord.id == channel_id))
 
 
 class NotificationDeliveryRepository:
@@ -387,14 +427,345 @@ class NotificationDeliveryRepository:
             )
         return delivery
 
+    def list_for_related(
+        self,
+        channel_id: str,
+        event_type: str,
+        related_id: str,
+        limit: int = 20,
+    ) -> list[NotificationDelivery]:
+        rows = self.list_saved(channel_id=channel_id, event_type=event_type, limit=limit)
+        return [row for row in rows if row.related_id == related_id]
+
+
+class NotificationRoutingAuditRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(
+        self,
+        channel_id: str | None = None,
+        event_type: str | None = None,
+        decision: str | None = None,
+        limit: int = 200,
+    ) -> list[NotificationRoutingAudit]:
+        with self.database.session_scope() as session:
+            statement = select(NotificationRoutingAuditRecord).order_by(NotificationRoutingAuditRecord.created_at.desc())
+            if channel_id:
+                statement = statement.where(NotificationRoutingAuditRecord.channel_id == channel_id)
+            if event_type:
+                statement = statement.where(NotificationRoutingAuditRecord.event_type == event_type)
+            if decision:
+                statement = statement.where(NotificationRoutingAuditRecord.decision == decision)
+            statement = statement.limit(limit)
+            rows = session.execute(statement).scalars().all()
+            return [NotificationRoutingAudit.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, audit_id: str) -> NotificationRoutingAudit | None:
+        with self.database.session_scope() as session:
+            row = session.get(NotificationRoutingAuditRecord, audit_id)
+            if row is None:
+                return None
+            return NotificationRoutingAudit.model_validate(json.loads(row.payload))
+
+    def save(self, audit: NotificationRoutingAudit) -> NotificationRoutingAudit:
+        with self.database.session_scope() as session:
+            session.merge(
+                NotificationRoutingAuditRecord(
+                    id=audit.id,
+                    channel_id=audit.channel_id,
+                    event_type=audit.event_type,
+                    decision=audit.decision,
+                    created_at=audit.created_at,
+                    payload=json.dumps(audit.model_dump(mode="json")),
+                )
+            )
+        return audit
+
+
+class OpsIncidentRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(
+        self,
+        status: str | None = None,
+        source_channel_id: str | None = None,
+        limit: int = 200,
+    ) -> list[OpsIncident]:
+        with self.database.session_scope() as session:
+            statement = select(OpsIncidentRecord).order_by(OpsIncidentRecord.updated_at.desc())
+            if status:
+                statement = statement.where(OpsIncidentRecord.status == status)
+            if source_channel_id:
+                statement = statement.where(OpsIncidentRecord.source_channel_id == source_channel_id)
+            statement = statement.limit(limit)
+            rows = session.execute(statement).scalars().all()
+            return [OpsIncident.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, incident_id: str) -> OpsIncident | None:
+        with self.database.session_scope() as session:
+            row = session.get(OpsIncidentRecord, incident_id)
+            if row is None:
+                return None
+            return OpsIncident.model_validate(json.loads(row.payload))
+
+    def save(self, incident: OpsIncident) -> OpsIncident:
+        with self.database.session_scope() as session:
+            session.merge(
+                OpsIncidentRecord(
+                    id=incident.id,
+                    source_channel_id=incident.source_channel_id,
+                    status=incident.status,
+                    severity=incident.severity,
+                    updated_at=incident.updated_at,
+                    payload=json.dumps(incident.model_dump(mode="json")),
+                )
+            )
+        return incident
+
+
+class SourceHealthRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(
+        self,
+        source_kind: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+    ) -> list[SourceHealth]:
+        with self.database.session_scope() as session:
+            statement = select(SourceHealthRecord).order_by(SourceHealthRecord.last_checked_at.desc())
+            if source_kind:
+                statement = statement.where(SourceHealthRecord.source_kind == source_kind)
+            if status:
+                statement = statement.where(SourceHealthRecord.status == status)
+            statement = statement.limit(limit)
+            rows = session.execute(statement).scalars().all()
+            return [SourceHealth.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, source_id: str) -> SourceHealth | None:
+        with self.database.session_scope() as session:
+            row = session.get(SourceHealthRecord, source_id)
+            if row is None:
+                return None
+            return SourceHealth.model_validate(json.loads(row.payload))
+
+    def save(self, source_health: SourceHealth) -> SourceHealth:
+        with self.database.session_scope() as session:
+            session.merge(
+                SourceHealthRecord(
+                    id=source_health.id,
+                    source_kind=source_health.source_kind,
+                    status=source_health.status,
+                    last_checked_at=source_health.last_checked_at,
+                    payload=json.dumps(source_health.model_dump(mode="json")),
+                )
+            )
+        return source_health
+
+
+class SourceHealthPolicyRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(
+        self,
+        active_only: bool = False,
+        limit: int = 200,
+        owner_scope: str | None = None,
+    ) -> list[SourceHealthPolicy]:
+        with self.database.session_scope() as session:
+            statement = select(SourceHealthPolicyRecord).order_by(SourceHealthPolicyRecord.updated_at.desc())
+            if active_only:
+                statement = statement.where(SourceHealthPolicyRecord.active == "true")
+            statement = statement.limit(limit)
+            rows = session.execute(statement).scalars().all()
+            policies = [SourceHealthPolicy.model_validate(json.loads(row.payload)) for row in rows]
+            if owner_scope:
+                policies = [item for item in policies if item.owner_scope == owner_scope]
+            return policies
+
+    def get(self, policy_id: str) -> SourceHealthPolicy | None:
+        with self.database.session_scope() as session:
+            row = session.get(SourceHealthPolicyRecord, policy_id)
+            if row is None:
+                return None
+            return SourceHealthPolicy.model_validate(json.loads(row.payload))
+
+    def save(self, policy: SourceHealthPolicy) -> SourceHealthPolicy:
+        with self.database.session_scope() as session:
+            session.merge(
+                SourceHealthPolicyRecord(
+                    id=policy.id,
+                    active="true" if policy.active else "false",
+                    updated_at=datetime.now(),
+                    payload=json.dumps(policy.model_dump(mode="json")),
+                )
+            )
+        return policy
+
+
+class SourceHealthPolicyRunRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(self, trigger: str | None = None, limit: int = 100) -> list[SourceHealthPolicyRun]:
+        with self.database.session_scope() as session:
+            statement = select(SourceHealthPolicyRunRecord).order_by(SourceHealthPolicyRunRecord.started_at.desc())
+            if trigger:
+                statement = statement.where(SourceHealthPolicyRunRecord.trigger == trigger)
+            statement = statement.limit(limit)
+            rows = session.execute(statement).scalars().all()
+            return [SourceHealthPolicyRun.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, run_id: str) -> SourceHealthPolicyRun | None:
+        with self.database.session_scope() as session:
+            row = session.get(SourceHealthPolicyRunRecord, run_id)
+            if row is None:
+                return None
+            return SourceHealthPolicyRun.model_validate(json.loads(row.payload))
+
+    def save(self, run: SourceHealthPolicyRun) -> SourceHealthPolicyRun:
+        with self.database.session_scope() as session:
+            session.merge(
+                SourceHealthPolicyRunRecord(
+                    id=run.id,
+                    trigger=run.trigger,
+                    started_at=run.started_at,
+                    payload=json.dumps(run.model_dump(mode="json")),
+                )
+            )
+        return run
+
+
+class SourceHealthPolicyVersionRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(self, policy_id: str, limit: int = 50) -> list[SourceHealthPolicyVersion]:
+        with self.database.session_scope() as session:
+            statement = (
+                select(SourceHealthPolicyVersionRecord)
+                .where(SourceHealthPolicyVersionRecord.policy_id == policy_id)
+                .order_by(SourceHealthPolicyVersionRecord.version_number.desc())
+                .limit(limit)
+            )
+            rows = session.execute(statement).scalars().all()
+            return [SourceHealthPolicyVersion.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, version_id: str) -> SourceHealthPolicyVersion | None:
+        with self.database.session_scope() as session:
+            row = session.get(SourceHealthPolicyVersionRecord, version_id)
+            if row is None:
+                return None
+            return SourceHealthPolicyVersion.model_validate(json.loads(row.payload))
+
+    def save(self, version: SourceHealthPolicyVersion) -> SourceHealthPolicyVersion:
+        with self.database.session_scope() as session:
+            session.merge(
+                SourceHealthPolicyVersionRecord(
+                    id=version.id,
+                    policy_id=version.policy_id,
+                    version_number=version.version_number,
+                    changed_at=version.changed_at,
+                    payload=json.dumps(version.model_dump(mode="json")),
+                )
+            )
+        return version
+
+
+class SourceHealthPolicyVersionPresetRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(self, policy_id: str, limit: int = 50) -> list[SourceHealthPolicyVersionPreset]:
+        with self.database.session_scope() as session:
+            statement = (
+                select(SourceHealthPolicyVersionPresetRecord)
+                .where(SourceHealthPolicyVersionPresetRecord.policy_id == policy_id)
+                .order_by(SourceHealthPolicyVersionPresetRecord.name.asc())
+                .limit(limit)
+            )
+            rows = session.execute(statement).scalars().all()
+            return [SourceHealthPolicyVersionPreset.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, preset_id: str) -> SourceHealthPolicyVersionPreset | None:
+        with self.database.session_scope() as session:
+            row = session.get(SourceHealthPolicyVersionPresetRecord, preset_id)
+            if row is None:
+                return None
+            return SourceHealthPolicyVersionPreset.model_validate(json.loads(row.payload))
+
+    def save(self, preset: SourceHealthPolicyVersionPreset) -> SourceHealthPolicyVersionPreset:
+        with self.database.session_scope() as session:
+            session.merge(
+                SourceHealthPolicyVersionPresetRecord(
+                    id=preset.id,
+                    policy_id=preset.policy_id,
+                    name=preset.name,
+                    payload=json.dumps(preset.model_dump(mode="json")),
+                )
+            )
+        return preset
+
+    def delete(self, preset_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(SourceHealthPolicyVersionPresetRecord).where(SourceHealthPolicyVersionPresetRecord.id == preset_id))
+
+
+class NotificationDigestRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(
+        self,
+        channel_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[NotificationDigest]:
+        with self.database.session_scope() as session:
+            statement = select(NotificationDigestRecord).order_by(NotificationDigestRecord.triggered_at.desc())
+            if channel_id:
+                statement = statement.where(NotificationDigestRecord.channel_id == channel_id)
+            if status:
+                statement = statement.where(NotificationDigestRecord.status == status)
+            statement = statement.limit(limit)
+            rows = session.execute(statement).scalars().all()
+            return [NotificationDigest.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, digest_id: str) -> NotificationDigest | None:
+        with self.database.session_scope() as session:
+            row = session.get(NotificationDigestRecord, digest_id)
+            if row is None:
+                return None
+            return NotificationDigest.model_validate(json.loads(row.payload))
+
+    def save(self, digest: NotificationDigest) -> NotificationDigest:
+        with self.database.session_scope() as session:
+            session.merge(
+                NotificationDigestRecord(
+                    id=digest.id,
+                    channel_id=digest.channel_id,
+                    status=digest.status,
+                    triggered_at=digest.triggered_at,
+                    payload=json.dumps(digest.model_dump(mode="json")),
+                )
+            )
+        return digest
+
 
 class WatchlistRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[Watchlist]:
+    def list_saved(self, owner_scope: str | None = None) -> list[Watchlist]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(WatchlistRecord).order_by(WatchlistRecord.id.asc())).scalars().all()
+            statement = select(WatchlistRecord).order_by(WatchlistRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(WatchlistRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [Watchlist.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, watchlist_id: str) -> Watchlist | None:
@@ -416,14 +787,21 @@ class WatchlistRepository:
             )
         return watchlist
 
+    def delete(self, watchlist_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(WatchlistRecord).where(WatchlistRecord.id == watchlist_id))
+
 
 class SavedScreenRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[SavedScreen]:
+    def list_saved(self, owner_scope: str | None = None) -> list[SavedScreen]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(SavedScreenRecord).order_by(SavedScreenRecord.id.asc())).scalars().all()
+            statement = select(SavedScreenRecord).order_by(SavedScreenRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(SavedScreenRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [SavedScreen.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, screen_id: str) -> SavedScreen | None:
@@ -445,14 +823,57 @@ class SavedScreenRepository:
             )
         return screen
 
+    def delete(self, screen_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(SavedScreenRecord).where(SavedScreenRecord.id == screen_id))
+
+
+class CrossCountryPresetRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(self, owner_scope: str | None = None) -> list[CrossCountryPreset]:
+        with self.database.session_scope() as session:
+            statement = select(CrossCountryPresetRecord).order_by(CrossCountryPresetRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(CrossCountryPresetRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
+            return [CrossCountryPreset.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, preset_id: str) -> CrossCountryPreset | None:
+        with self.database.session_scope() as session:
+            row = session.get(CrossCountryPresetRecord, preset_id)
+            if row is None:
+                return None
+            return CrossCountryPreset.model_validate(json.loads(row.payload))
+
+    def save(self, preset: CrossCountryPreset) -> CrossCountryPreset:
+        with self.database.session_scope() as session:
+            session.merge(
+                CrossCountryPresetRecord(
+                    id=preset.id,
+                    name=preset.name,
+                    owner_scope=preset.owner_scope,
+                    payload=json.dumps(preset.model_dump(mode="json")),
+                )
+            )
+        return preset
+
+    def delete(self, preset_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(CrossCountryPresetRecord).where(CrossCountryPresetRecord.id == preset_id))
+
 
 class ScenarioRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ScenarioDefinition]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ScenarioDefinition]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ScenarioRecord).order_by(ScenarioRecord.id.asc())).scalars().all()
+            statement = select(ScenarioRecord).order_by(ScenarioRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ScenarioRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ScenarioDefinition.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, scenario_id: str) -> ScenarioDefinition | None:
@@ -474,14 +895,21 @@ class ScenarioRepository:
             )
         return scenario
 
+    def delete(self, scenario_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ScenarioRecord).where(ScenarioRecord.id == scenario_id))
+
 
 class ModelPortfolioRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ModelPortfolio]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ModelPortfolio]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ModelPortfolioRecord).order_by(ModelPortfolioRecord.id.asc())).scalars().all()
+            statement = select(ModelPortfolioRecord).order_by(ModelPortfolioRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ModelPortfolioRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ModelPortfolio.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, portfolio_id: str) -> ModelPortfolio | None:
@@ -503,14 +931,21 @@ class ModelPortfolioRepository:
             )
         return portfolio
 
+    def delete(self, portfolio_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ModelPortfolioRecord).where(ModelPortfolioRecord.id == portfolio_id))
+
 
 class ReportTemplateRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ReportTemplate]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ReportTemplate]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ReportTemplateRecord).order_by(ReportTemplateRecord.id.asc())).scalars().all()
+            statement = select(ReportTemplateRecord).order_by(ReportTemplateRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ReportTemplateRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ReportTemplate.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, template_id: str) -> ReportTemplate | None:
@@ -531,6 +966,10 @@ class ReportTemplateRepository:
                 )
             )
         return template
+
+    def delete(self, template_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ReportTemplateRecord).where(ReportTemplateRecord.id == template_id))
 
 
 class ReportSnapshotRepository:
@@ -566,9 +1005,12 @@ class ReportJobRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def list_saved(self) -> list[ReportJob]:
+    def list_saved(self, owner_scope: str | None = None) -> list[ReportJob]:
         with self.database.session_scope() as session:
-            rows = session.execute(select(ReportJobRecord).order_by(ReportJobRecord.id.asc())).scalars().all()
+            statement = select(ReportJobRecord).order_by(ReportJobRecord.id.asc())
+            if owner_scope:
+                statement = statement.where(ReportJobRecord.owner_scope == owner_scope)
+            rows = session.execute(statement).scalars().all()
             return [ReportJob.model_validate(json.loads(row.payload)) for row in rows]
 
     def get(self, job_id: str) -> ReportJob | None:
@@ -591,6 +1033,10 @@ class ReportJobRepository:
                 )
             )
         return job
+
+    def delete(self, job_id: str) -> None:
+        with self.database.session_scope() as session:
+            session.execute(delete(ReportJobRecord).where(ReportJobRecord.id == job_id))
 
 
 class ReportJobRunRepository:
@@ -620,3 +1066,44 @@ class ReportJobRunRepository:
                 )
             )
         return run
+
+
+class ReleaseFreshnessSnapshotRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_saved(
+        self,
+        country: str | None = None,
+        topic: str | None = None,
+        limit: int = 50,
+    ) -> list[ReleaseFreshnessSnapshot]:
+        with self.database.session_scope() as session:
+            statement = select(ReleaseFreshnessSnapshotRecord).order_by(ReleaseFreshnessSnapshotRecord.captured_at.desc())
+            if country:
+                statement = statement.where(ReleaseFreshnessSnapshotRecord.country == country)
+            if topic:
+                statement = statement.where(ReleaseFreshnessSnapshotRecord.topic == topic)
+            statement = statement.limit(limit)
+            rows = session.execute(statement).scalars().all()
+            return [ReleaseFreshnessSnapshot.model_validate(json.loads(row.payload)) for row in rows]
+
+    def get(self, snapshot_id: str) -> ReleaseFreshnessSnapshot | None:
+        with self.database.session_scope() as session:
+            row = session.get(ReleaseFreshnessSnapshotRecord, snapshot_id)
+            if row is None:
+                return None
+            return ReleaseFreshnessSnapshot.model_validate(json.loads(row.payload))
+
+    def save(self, snapshot: ReleaseFreshnessSnapshot) -> ReleaseFreshnessSnapshot:
+        with self.database.session_scope() as session:
+            session.merge(
+                ReleaseFreshnessSnapshotRecord(
+                    id=snapshot.id,
+                    captured_at=snapshot.captured_at,
+                    country=snapshot.country,
+                    topic=snapshot.topic,
+                    payload=json.dumps(snapshot.model_dump(mode="json")),
+                )
+            )
+        return snapshot

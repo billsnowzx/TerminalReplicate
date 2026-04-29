@@ -2,12 +2,14 @@
 __pycache__/
 .pytest_cache/
 .streamlit/
+.env
 node_modules/
 *.egg-info/
 *.pyc
 data/*.db
 data/*.json
 data/notifications/
+data/
 data/raw/*.parquet
 data/report_scripts/
 data/reports/

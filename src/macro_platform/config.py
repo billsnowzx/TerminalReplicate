@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     enable_report_scheduler: bool = False
     report_scheduler_poll_seconds: int = 300
     fred_api_key: str | None = None
+    bls_api_key: str | None = None
     use_openbb_market_provider: bool = False
 
     model_config = SettingsConfigDict(
