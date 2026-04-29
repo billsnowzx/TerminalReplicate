@@ -126,6 +126,16 @@ def refresh_v1_workspace(run_macro_brief_job: bool = False):
     return service.refresh_v1_workspace(run_macro_brief_job=run_macro_brief_job)
 
 
+@app.post("/api/v1/research-defaults/bootstrap")
+def bootstrap_v1_research_defaults():
+    try:
+        return service.bootstrap_v1_research_defaults()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/v1/reports/macro-brief")
 def v1_macro_brief(
     export_format: list[str] | None = Query(default=None),

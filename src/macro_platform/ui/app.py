@@ -235,6 +235,62 @@ def render_v1_analyst_brief_card(workspace: dict[str, object]) -> bool:
     return can_generate
 
 
+def render_v1_research_shortcuts(workspace: dict[str, object]) -> None:
+    defaults = workspace.get("research_defaults", {})
+    if not isinstance(defaults, dict):
+        defaults = {}
+    preset = defaults.get("cross_country_preset")
+    screen = defaults.get("screen")
+    if not isinstance(preset, dict):
+        preset = None
+    if not isinstance(screen, dict):
+        screen = None
+
+    st.markdown("### Research Shortcuts")
+    shortcut_left, shortcut_mid, shortcut_right = st.columns([1, 1, 1])
+    with shortcut_left:
+        st.metric("Defaults", "Ready" if bool(defaults.get("is_bootstrapped")) else "Missing")
+        if st.button("Bootstrap V1 Defaults", key="v1_bootstrap_research_defaults", use_container_width=True):
+            service.bootstrap_v1_research_defaults()
+            st.success("V1 research defaults are ready.")
+            st.rerun()
+    with shortcut_mid:
+        st.caption("Cross-country preset")
+        if preset is None:
+            st.info("No V1 default preset yet.")
+        else:
+            st.write(str(preset.get("name", "V1 preset")))
+            st.caption("Countries: " + ", ".join(str(item) for item in preset.get("countries", [])))
+    with shortcut_right:
+        st.caption("Screening preset")
+        if screen is None:
+            st.info("No V1 saved screen yet.")
+        else:
+            st.write(str(screen.get("name", "V1 screen")))
+            spec = screen.get("spec", {})
+            universe = spec.get("universe", []) if isinstance(spec, dict) else []
+            st.caption(f"Universe: {len(universe)} assets")
+
+    if preset is not None:
+        with st.expander("Preview Default Cross-Country Rows", expanded=False):
+            if st.button("Run Cross-Country Preview", key="v1_cross_country_default_preview"):
+                rows = service.get_cross_country_comparison(
+                    countries=[str(item) for item in preset.get("countries", [])],
+                    limit=6,
+                    factor_weights=preset.get("factor_weights") if isinstance(preset.get("factor_weights"), dict) else None,
+                )
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    if screen is not None:
+        with st.expander("Preview Default Screen Results", expanded=False):
+            if st.button("Run Screen Preview", key="v1_screen_default_preview"):
+                try:
+                    saved = service.get_saved_screen(str(screen["id"]))
+                    rows = service.run_screen(saved.spec)
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                except KeyError:
+                    st.warning("Saved screen is no longer available.")
+
+
 def render_v1_workspace() -> None:
     st.subheader("V1 Analyst Workspace")
     st.caption("Prototype-first workspace using real public connectors when available, with cache/demo fallback shown explicitly.")
@@ -258,6 +314,7 @@ def render_v1_workspace() -> None:
     summary_cols[3].metric("Problem sources", int(problem_source_count))
 
     can_generate_brief = render_v1_analyst_brief_card(workspace)
+    render_v1_research_shortcuts(workspace)
 
     action_col_1, action_col_2, action_col_3, action_col_4 = st.columns(4)
     with action_col_1:

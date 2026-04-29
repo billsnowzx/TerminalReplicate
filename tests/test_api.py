@@ -89,6 +89,7 @@ def test_v1_workspace_endpoint_exposes_connector_data_states(client):
     assert payload["demo_readiness"]["can_generate_brief"] is True
     assert payload["demo_readiness"]["latest_brief"] is None
     assert "market:prices" in payload["demo_readiness"]["critical_sources"]
+    assert payload["research_defaults"]["is_bootstrapped"] is False
     assert payload["macro_brief_job"]["exists"] is False
     assert payload["macro_brief_job"]["status"] == "not_configured"
     assert payload["macro_brief_history"] == []
@@ -104,6 +105,24 @@ def test_v1_workspace_refresh_endpoint_returns_workspace_payload(client):
     assert "macro" in payload["workspace"]
     assert "cross_asset" in payload["workspace"]
     assert "demo_readiness" in payload["workspace"]
+    assert "research_defaults" in payload["workspace"]
+
+
+def test_v1_research_defaults_bootstrap_endpoint_creates_demo_presets(client):
+    response = client.post("/api/v1/research-defaults/bootstrap")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_bootstrapped"] is True
+    assert payload["cross_country_preset"]["id"] == "v1-global-macro-default"
+    assert payload["cross_country_preset"]["is_default"] is True
+    assert payload["screen"]["id"] == "v1-cross-asset-momentum"
+    assert payload["screen"]["spec"]["filters"][0]["field"] == "return_63d"
+
+    workspace = client.get("/api/v1/workspace")
+    assert workspace.status_code == 200
+    workspace_payload = workspace.json()
+    assert workspace_payload["research_defaults"]["is_bootstrapped"] is True
+    assert workspace_payload["research_defaults"]["cross_country_preset"]["id"] == "v1-global-macro-default"
 
 
 def test_v1_workspace_refresh_can_run_macro_brief_job(client):

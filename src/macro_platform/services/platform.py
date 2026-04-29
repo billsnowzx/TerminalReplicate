@@ -51,6 +51,7 @@ from macro_platform.domain.models import (
     ReportTemplateSection,
     ReleaseEvent,
     SavedScreen,
+    ScreenFilter,
     ScreenSpec,
     ScenarioDefinition,
     SeriesDefinition,
@@ -346,6 +347,7 @@ class PlatformService:
             cross_asset_rows=cross_asset_rows,
             macro_brief_history=macro_brief_history,
         )
+        research_defaults = self.get_v1_research_defaults_summary()
         return {
             "generated_at": datetime.now(),
             "macro": macro_rows,
@@ -354,6 +356,7 @@ class PlatformService:
             "sources": source_rows,
             "source_summary": dict(source_summary),
             "demo_readiness": demo_readiness,
+            "research_defaults": research_defaults,
             "macro_brief_job": self.get_v1_macro_brief_job_summary(),
             "macro_brief_history": macro_brief_history,
             "latest_reports": latest_reports,
@@ -428,6 +431,60 @@ class PlatformService:
             "warnings": warnings,
             "latest_brief": latest_brief,
             "latest_export_paths": latest_export_paths,
+        }
+
+    def get_v1_research_defaults_summary(self) -> dict[str, object]:
+        preset = self.cross_country_preset_repo.get("v1-global-macro-default")
+        screen = self.saved_screen_repo.get("v1-cross-asset-momentum")
+        return {
+            "cross_country_preset": preset.model_dump(mode="json") if preset else None,
+            "screen": screen.model_dump(mode="json") if screen else None,
+            "is_bootstrapped": preset is not None and screen is not None,
+        }
+
+    def bootstrap_v1_research_defaults(self) -> dict[str, object]:
+        existing_preset = self.cross_country_preset_repo.get("v1-global-macro-default")
+        preset = CrossCountryPreset(
+            id="v1-global-macro-default",
+            name="V1 Global Macro Default",
+            countries=["US", "CN", "EA", "JP", "GB", "CA"],
+            factor_weights={
+                "growth": 1.2,
+                "inflation": 1.0,
+                "labor_unemployment": 0.8,
+                "policy_rate": 0.8,
+                "equity_return_63d": 1.0,
+            },
+            is_default=True,
+            owner_scope="shared",
+            notes="Default V1 prototype comparison preset for major macro regions.",
+        )
+        if existing_preset is not None:
+            preset = preset.model_copy(update={"notes": existing_preset.notes or preset.notes})
+        saved_preset = self.save_cross_country_preset(preset, allow_shared_mutation=True)
+
+        existing_screen = self.saved_screen_repo.get("v1-cross-asset-momentum")
+        screen = SavedScreen(
+            id="v1-cross-asset-momentum",
+            name="V1 Cross-Asset Momentum",
+            spec=ScreenSpec(
+                universe=list(self.market_universe.keys()),
+                transforms=["return_21d", "return_63d", "drawdown"],
+                filters=[
+                    ScreenFilter(field="return_63d", operator="gte", value=0.0),
+                    ScreenFilter(field="drawdown", operator="gte", value=-0.15),
+                ],
+                ranking="return_63d",
+            ),
+            owner_scope="shared",
+        )
+        if existing_screen is not None:
+            screen = screen.model_copy(update={"name": existing_screen.name or screen.name})
+        saved_screen = self.save_saved_screen(screen, allow_shared_mutation=True)
+        return {
+            "cross_country_preset": saved_preset.model_dump(mode="json"),
+            "screen": saved_screen.model_dump(mode="json"),
+            "is_bootstrapped": True,
         }
 
     def refresh_v1_workspace(self, run_macro_brief_job: bool = False) -> dict[str, object]:
