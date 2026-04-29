@@ -340,6 +340,12 @@ class PlatformService:
             for item in all_snapshots
             if item.template_id == "v1-macro-brief"
         ][:10]
+        demo_readiness = self._build_v1_demo_readiness(
+            source_rows=source_rows,
+            macro_rows=macro_rows,
+            cross_asset_rows=cross_asset_rows,
+            macro_brief_history=macro_brief_history,
+        )
         return {
             "generated_at": datetime.now(),
             "macro": macro_rows,
@@ -347,9 +353,81 @@ class PlatformService:
             "regime": regime,
             "sources": source_rows,
             "source_summary": dict(source_summary),
+            "demo_readiness": demo_readiness,
             "macro_brief_job": self.get_v1_macro_brief_job_summary(),
             "macro_brief_history": macro_brief_history,
             "latest_reports": latest_reports,
+        }
+
+    def _build_v1_demo_readiness(
+        self,
+        *,
+        source_rows: list[dict[str, object]],
+        macro_rows: list[dict[str, object]],
+        cross_asset_rows: list[dict[str, object]],
+        macro_brief_history: list[dict[str, object]],
+    ) -> dict[str, object]:
+        critical_sources = {"macro:fred", "market:prices"}
+        important_sources = {"macro:bls", "macro:ecb", "macro:world_bank", "macro:imf"}
+        source_by_id = {str(row.get("source_id")): row for row in source_rows}
+        blockers: list[str] = []
+        warnings: list[str] = []
+
+        for source_id in sorted(critical_sources):
+            row = source_by_id.get(source_id)
+            if row is None:
+                blockers.append(f"{source_id} has not been checked.")
+                continue
+            if row.get("status") in {"down", "degraded"}:
+                blockers.append(f"{source_id} is {row.get('status')}.")
+            elif row.get("data_state") in {"demo_fallback", "not_checked"}:
+                warnings.append(f"{source_id} is using {row.get('data_state')}.")
+            elif row.get("is_stale"):
+                warnings.append(f"{source_id} is stale.")
+
+        for source_id in sorted(important_sources):
+            row = source_by_id.get(source_id)
+            if row is None:
+                warnings.append(f"{source_id} has not been checked.")
+                continue
+            if row.get("status") in {"down", "degraded"}:
+                warnings.append(f"{source_id} is {row.get('status')}.")
+            elif row.get("data_state") in {"demo_fallback", "not_checked"}:
+                warnings.append(f"{source_id} is using {row.get('data_state')}.")
+            elif row.get("is_stale"):
+                warnings.append(f"{source_id} is stale.")
+
+        if not macro_rows:
+            blockers.append("Global macro monitor has no rows.")
+        if not cross_asset_rows:
+            blockers.append("Cross-asset monitor has no rows.")
+
+        latest_brief = macro_brief_history[0] if macro_brief_history else None
+        latest_export_paths = latest_brief.get("export_paths", {}) if isinstance(latest_brief, dict) else {}
+        if not isinstance(latest_export_paths, dict):
+            latest_export_paths = {}
+        missing_core_exports = [
+            item for item in ["markdown", "xlsx"] if item not in latest_export_paths
+        ]
+        if latest_brief is None:
+            warnings.append("No V1 Macro Brief has been generated yet.")
+        elif missing_core_exports:
+            warnings.append(f"Latest V1 Macro Brief is missing: {', '.join(missing_core_exports)}.")
+
+        status = "ready"
+        if blockers:
+            status = "blocked"
+        elif warnings:
+            status = "warning"
+        return {
+            "status": status,
+            "can_generate_brief": not blockers,
+            "critical_sources": sorted(critical_sources),
+            "important_sources": sorted(important_sources),
+            "blockers": blockers,
+            "warnings": warnings,
+            "latest_brief": latest_brief,
+            "latest_export_paths": latest_export_paths,
         }
 
     def refresh_v1_workspace(self, run_macro_brief_job: bool = False) -> dict[str, object]:

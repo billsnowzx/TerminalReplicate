@@ -85,6 +85,10 @@ def test_v1_workspace_endpoint_exposes_connector_data_states(client):
     assert source_map["macro:fred"]["data_state"] == "real"
     assert source_map["market:prices"]["data_state"] == "demo_fallback"
     assert "source_summary" in payload
+    assert payload["demo_readiness"]["status"] in {"ready", "warning", "blocked"}
+    assert payload["demo_readiness"]["can_generate_brief"] is True
+    assert payload["demo_readiness"]["latest_brief"] is None
+    assert "market:prices" in payload["demo_readiness"]["critical_sources"]
     assert payload["macro_brief_job"]["exists"] is False
     assert payload["macro_brief_job"]["status"] == "not_configured"
     assert payload["macro_brief_history"] == []
@@ -99,6 +103,7 @@ def test_v1_workspace_refresh_endpoint_returns_workspace_payload(client):
     assert payload["job_run"] is None
     assert "macro" in payload["workspace"]
     assert "cross_asset" in payload["workspace"]
+    assert "demo_readiness" in payload["workspace"]
 
 
 def test_v1_workspace_refresh_can_run_macro_brief_job(client):
@@ -212,6 +217,8 @@ def test_v1_macro_brief_job_run_endpoint_executes_and_persists_snapshot(client):
     assert workspace_payload["macro_brief_job"]["status"] in {"healthy", "failing", "paused"}
     assert len(workspace_payload["macro_brief_history"]) >= 1
     assert workspace_payload["macro_brief_history"][0]["template_id"] == "v1-macro-brief"
+    assert workspace_payload["demo_readiness"]["latest_brief"]["template_id"] == "v1-macro-brief"
+    assert "markdown" in workspace_payload["demo_readiness"]["latest_export_paths"]
 
 
 def test_series_data_status_endpoint_reports_real_after_successful_fetch(client):

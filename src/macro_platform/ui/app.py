@@ -179,6 +179,62 @@ def _health_label(status: str, is_stale: bool) -> str:
     return status.upper()
 
 
+def _brief_export_caption(export_paths: dict[str, object]) -> str:
+    if not export_paths:
+        return "No exports available"
+    ordered = [item for item in EXPECTED_BRIEF_EXPORT_FORMATS if item in export_paths]
+    extras = sorted(str(item) for item in export_paths.keys() if item not in EXPECTED_BRIEF_EXPORT_FORMATS)
+    return ", ".join(ordered + extras)
+
+
+def render_v1_analyst_brief_card(workspace: dict[str, object]) -> bool:
+    readiness = workspace.get("demo_readiness", {})
+    if not isinstance(readiness, dict):
+        readiness = {}
+    status = str(readiness.get("status", "unknown"))
+    can_generate = bool(readiness.get("can_generate_brief", False))
+    blockers = readiness.get("blockers", [])
+    warnings = readiness.get("warnings", [])
+    latest_brief = readiness.get("latest_brief")
+    latest_export_paths = readiness.get("latest_export_paths", {})
+    if not isinstance(blockers, list):
+        blockers = []
+    if not isinstance(warnings, list):
+        warnings = []
+    if not isinstance(latest_brief, dict):
+        latest_brief = None
+    if not isinstance(latest_export_paths, dict):
+        latest_export_paths = {}
+
+    st.markdown("### Analyst Brief")
+    top_left, top_mid, top_right = st.columns([1, 1, 2])
+    top_left.metric("Demo Status", status.upper())
+    top_mid.metric("Open Issues", len(blockers) + len(warnings))
+    latest_name = latest_brief.get("name") if latest_brief else "No brief generated"
+    latest_time = latest_brief.get("generated_at") if latest_brief else "n/a"
+    top_right.caption(f"Latest brief: {latest_name}")
+    top_right.caption(f"Generated: {latest_time}")
+    top_right.caption(f"Exports: {_brief_export_caption(latest_export_paths)}")
+
+    if blockers:
+        st.error("Demo blockers: " + " | ".join(str(item) for item in blockers[:4]))
+    elif warnings:
+        st.warning("Demo warnings: " + " | ".join(str(item) for item in warnings[:4]))
+    else:
+        st.success("Demo readiness is green for the V1 prototype workflow.")
+
+    if latest_export_paths:
+        export_frame = pd.DataFrame(
+            [
+                {"format": str(export_format), "path": str(path)}
+                for export_format, path in sorted(latest_export_paths.items())
+            ]
+        )
+        st.dataframe(export_frame, use_container_width=True, hide_index=True)
+
+    return can_generate
+
+
 def render_v1_workspace() -> None:
     st.subheader("V1 Analyst Workspace")
     st.caption("Prototype-first workspace using real public connectors when available, with cache/demo fallback shown explicitly.")
@@ -201,15 +257,7 @@ def render_v1_workspace() -> None:
     summary_cols[2].metric("Not checked", int(source_summary.get("not_checked", 0)))
     summary_cols[3].metric("Problem sources", int(problem_source_count))
 
-    latest_history_rows = workspace.get("macro_brief_history", [])
-    if isinstance(latest_history_rows, list) and latest_history_rows:
-        latest = latest_history_rows[0]
-        if isinstance(latest, dict):
-            st.caption(
-                "Latest V1 Macro Brief: "
-                f"{latest.get('name', latest.get('id', 'n/a'))} | "
-                f"{latest.get('generated_at', 'n/a')}"
-            )
+    can_generate_brief = render_v1_analyst_brief_card(workspace)
 
     action_col_1, action_col_2, action_col_3, action_col_4 = st.columns(4)
     with action_col_1:
@@ -218,12 +266,23 @@ def render_v1_workspace() -> None:
             st.success("Workspace refreshed.")
             st.rerun()
     with action_col_2:
-        if st.button("Generate Brief (Quick)", type="primary", key="v1_brief_quick_btn", use_container_width=True):
+        if st.button(
+            "Generate Brief (Quick)",
+            type="primary",
+            key="v1_brief_quick_btn",
+            use_container_width=True,
+            disabled=not can_generate_brief,
+        ):
             service.generate_v1_macro_brief(export_formats=["markdown", "xlsx"])
             st.success("Generated quick V1 Macro Brief (markdown + xlsx).")
             st.rerun()
     with action_col_3:
-        if st.button("Generate Brief (Full)", key="v1_brief_full_btn", use_container_width=True):
+        if st.button(
+            "Generate Brief (Full)",
+            key="v1_brief_full_btn",
+            use_container_width=True,
+            disabled=not can_generate_brief,
+        ):
             service.generate_v1_macro_brief(export_formats=EXPECTED_BRIEF_EXPORT_FORMATS)
             st.success("Generated full V1 Macro Brief (all export formats).")
             st.rerun()
